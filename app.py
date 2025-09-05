@@ -286,9 +286,26 @@ st.title("📊 Tabela diária de Reservatórios")
 
 try:
     df_raw = load_data_from_url(SHEETS_URL)
-
-    with st.expander("Visualizar dados brutos"):
-        st.dataframe(df_raw.head(), use_container_width=True)
+    
+    # Filtro por reservatório
+    col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
+    if col_res_guess:
+        reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
+        
+        all_options = ["Todos"] + reservatorios
+        sel = st.multiselect("Filtrar reservatórios (opcional)", all_options, default=["Todos"], placeholder="Selecione…")
+        
+        if "Todos" in sel:
+            df_filtered = df_raw
+        elif sel:
+            df_filtered = df_raw[df_raw[col_res_guess].isin(sel)]
+        else:
+            df_filtered = df_raw.head(0) # Retorna um DataFrame vazio se nada for selecionado
+            st.info("Nenhum reservatório selecionado. Selecione 'Todos' ou um reservatório para visualizar os dados.")
+            st.stop()
+    else:
+        df_filtered = df_raw
+        st.warning("Não foi possível identificar a coluna de Reservatório.")
 
     # Query param para data anterior
     q = st.query_params
@@ -298,16 +315,6 @@ try:
             forced_prev = pd.to_datetime(q["prev"], errors="coerce").normalize()
         except Exception:
             forced_prev = None
-
-    # Filtro por reservatório
-    col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
-    if col_res_guess:
-        reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
-        sel = st.multiselect("Filtrar reservatórios (opcional)", reservatorios, [], placeholder="Selecione…")
-        df_filtered = df_raw[df_raw[col_res_guess].isin(sel)] if sel else df_raw
-    else:
-        df_filtered = df_raw
-        st.warning("Não foi possível identificar a coluna de Reservatório.")
 
     # Processa
     with st.spinner("Processando dados..."):
