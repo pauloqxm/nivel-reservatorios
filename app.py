@@ -287,22 +287,59 @@ st.title("📊 Tabela diária de Reservatórios")
 try:
     df_raw = load_data_from_url(SHEETS_URL)
     
-    # Filtro por reservatório
+    # Filtro por reservatório - MODIFICADO
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     if col_res_guess:
         reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
         
+        # Criar opções com "Todos" primeiro
         all_options = ["Todos"] + reservatorios
-        sel = st.multiselect("Filtrar reservatórios (opcional)", all_options, default=["Todos"], placeholder="Selecione…")
         
+        # Container para organizar os controles
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            # Multiselect para seleção
+            sel = st.multiselect(
+                "Filtrar reservatórios (opcional)", 
+                all_options, 
+                default=["Todos"], 
+                placeholder="Selecione…",
+                help="Selecione 'Todos' para mostrar todos os reservatórios, ou selecione/desselecione individualmente"
+            )
+        
+        with col2:
+            # Botões de ação rápida
+            st.write("Ações rápidas:")
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("Todos", use_container_width=True):
+                    sel = ["Todos"]
+                    st.rerun()
+            with col_btn2:
+                if st.button("Nenhum", use_container_width=True):
+                    sel = []
+                    st.rerun()
+        
+        # Lógica de filtragem
         if "Todos" in sel:
+            # Se "Todos" está selecionado, mostrar tudo
             df_filtered = df_raw
+            st.info("Mostrando todos os reservatórios")
         elif sel:
+            # Se há seleções específicas (sem "Todos")
             df_filtered = df_raw[df_raw[col_res_guess].isin(sel)]
+            st.info(f"Mostrando {len(sel)} reservatório(s) selecionado(s)")
         else:
-            df_filtered = df_raw.head(0) # Retorna um DataFrame vazio se nada for selecionado
-            st.info("Nenhum reservatório selecionado. Selecione 'Todos' ou um reservatório para visualizar os dados.")
+            # Se nada foi selecionado
+            df_filtered = df_raw.head(0)
+            st.info("Nenhum reservatório selecionado. Selecione 'Todos' ou reservatórios específicos para visualizar os dados.")
             st.stop()
+            
+        # Mostrar status da seleção
+        if sel and "Todos" not in sel:
+            st.caption(f"Selecionados: {', '.join(sel)}")
+            
     else:
         df_filtered = df_raw
         st.warning("Não foi possível identificar a coluna de Reservatório.")
