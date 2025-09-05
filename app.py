@@ -7,12 +7,15 @@ import streamlit as st
 import altair as alt
 
 # Tentar importar vl_convert_python e matplotlib para conversão de gráficos em PNG
+VL_CONVERT_AVAILABLE = False
 try:
     import vl_convert as vlc
     import matplotlib.pyplot as plt
-    VL_CONVERT_AVAILABLE = True
+    if hasattr(vlc, 'json_to_png'):
+        VL_CONVERT_AVAILABLE = True
+    else:
+        st.warning("A função 'json_to_png' não foi encontrada na biblioteca 'vl_convert'. A opção de download de gráficos em PNG pode não funcionar. Verifique a versão da biblioteca ou reinstale-a.")
 except ImportError:
-    VL_CONVERT_AVAILABLE = False
     st.warning("A biblioteca 'vl_convert' ou 'matplotlib' não foi encontrada. A opção de download de gráficos em PNG pode não funcionar. Instale com 'pip install vl_convert_python matplotlib'.")
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
@@ -286,6 +289,7 @@ def render_table_html(
 
 def get_chart_as_png_bytes(chart):
     if not VL_CONVERT_AVAILABLE:
+        st.error("A funcionalidade de download de PNG está indisponível. A biblioteca 'vl_convert' ou a função 'json_to_png' não foi carregada.")
         return None
     try:
         chart_json = chart.to_json(indent=None)
