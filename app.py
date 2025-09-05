@@ -112,7 +112,7 @@ def compute_table_global_dates(
     if missing:
         raise ValueError(
             "Não foi possível identificar as colunas na planilha. "
-            f"Faltando: {', '.join(missing)}. Ajuste os aliases no código ou renomeie na planilha."
+            f"Faltando: {', '.join(missing)}."
         )
 
     df[col_data]         = df[col_data].apply(to_datetime_any)
@@ -166,7 +166,7 @@ def compute_table_global_dates(
             col_anterior_label: nivel_anterior,
             col_atual_label:    nivel_atual,
             "Variação do Nível": variacao_nivel,
-            "Variação do Volume": variacao_volume,  # diferença em m³
+            "Variação do Volume": variacao_volume,  # m³
             "Volume": vol_atual,
             "Percentual": perc_atual,
         })
@@ -259,12 +259,12 @@ def render_table_with_group_headers(
     for _, row in df.iterrows():
         html.append("<tr>")
         html.append(f"<td>{row['Reservatório']}</td>")
-        html.append(f"<td>{format_ptbr(row['Capacidade Total (m³)'], casas=2)}</td>")  # 2 casas (ex.: 2,52)
+        html.append(f"<td>{format_ptbr(row['Capacidade Total (m³)'], casas=2)}</td>")  # 2 casas
         html.append(f"<td>{format_ptbr(row['Cota Sangria'], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[prev_label], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[curr_label], casas=2)}</td>")
         html.append(f"<td>{var_icon_html(row['Variação do Nível'])}</td>")
-        html.append(f"<td>{format_m3(row['Variação do Volume'], casas=2)}</td>")       # m³ com 2 casas
+        html.append(f"<td>{format_m3(row['Variação do Volume'], casas=3)}</td>")       # <<< 3 casas + m³
         html.append(f"<td>{format_ptbr(row['Volume'], casas=2)}</td>")
         html.append(f"<td>{format_pct_br(row['Percentual'], casas=2)}</td>")
         html.append("</tr>")
@@ -356,15 +356,17 @@ try:
             "Volume", "Percentual"
         ]
 
-        def fmt2(v):  # 2 casas com vírgula
+        def fmt2(v):  # 2 casas
             return format_ptbr(v, casas=2)
+        def fmt3(v):  # 3 casas
+            return format_ptbr(v, casas=3)
 
         csv_df["Capacidade Total (m³)"] = csv_df["Capacidade Total (m³)"].apply(fmt2)
         csv_df["Cota Sangria"] = csv_df["Cota Sangria"].apply(fmt2)
         csv_df[prev_label] = csv_df[prev_label].apply(fmt2)
         csv_df[curr_label] = csv_df[curr_label].apply(fmt2)
         csv_df["Variação do Nível"] = csv_df["Variação do Nível"].apply(fmt2)
-        csv_df["Variação do Volume"] = csv_df["Variação do Volume"].apply(lambda v: (fmt2(v) + " m³") if fmt2(v) != "" else "")
+        csv_df["Variação do Volume"] = csv_df["Variação do Volume"].apply(lambda v: (fmt3(v) + " m³") if fmt3(v) != "" else "")  # <<< 3 casas + m³
         csv_df["Volume"] = csv_df["Volume"].apply(fmt2)
         csv_df["Percentual"] = csv_df["Percentual"].apply(lambda v: format_pct_br(v, casas=2))
 
@@ -375,10 +377,9 @@ try:
                            mime="text/csv")
 
         st.caption(
-            "• **Variação do Volume** agora é exibida em **m³** (duas casas). "
-            "• **Capacidade Total (m³)** mostra **duas casas** (ex.: 2,52). "
-            "• **Variação do Nível**: seta **azul (▲)** para positivo e **vermelha (▼)** para negativo. "
-            f"• Cabeçalhos: **Cota (m)** → {prev_label}/{curr_label}; **{volume_group_label}** → Volume e Percentual."
+            "• **Variação do Volume** exibida com **três casas** e sufixo **m³**. "
+            "• **Capacidade Total (m³)** com **duas casas** (ex.: 2,52). "
+            "• **Variação do Nível**: seta **azul (▲)** para positivo e **vermelha (▼)** para negativo."
         )
 
 except Exception as e:
