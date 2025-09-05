@@ -225,8 +225,7 @@ def render_table_with_group_headers(
     prev_label: str,
     curr_label: str,
     volume_group_label: str,
-    cota_group_label: str = "Cota (m)",
-    prev_date_value: pd.Timestamp = None
+    cota_group_label: str = "Cota (m)"
 ):
     css = """
     <style>
@@ -236,8 +235,6 @@ def render_table_with_group_headers(
     table.cota-table td:first-child, table.cota-table th:first-child {text-align: left;}
     .group-head {text-align: center; background: #a7f3d0;}
     table.cota-table tr:nth-child(even) {background-color: #f7fee7;}
-    .date-header {cursor: pointer; text-decoration: underline; color: #2563eb;}
-    .date-header:hover {color: #1e40af;}
     </style>
     """
     html = [css, '<table class="cota-table">', "<thead>"]
@@ -245,7 +242,7 @@ def render_table_with_group_headers(
     # Linha 1
     html.append("<tr>")
     html.append('<th rowspan="2">Reservatório</th>')
-    html.append('<th rowspan="2">Capacidade Total (m³)</th>')
+    html.append('<th rowspan="2">Capacidade Total (hm³)</th>')
     html.append('<th rowspan="2">Cota Sangria</th>')
     html.append(f'<th class="group-head" colspan="2">{cota_group_label}</th>')
     html.append('<th rowspan="2">Variação do Nível</th>')
@@ -254,13 +251,9 @@ def render_table_with_group_headers(
     html.append('<th rowspan="2">Verter (m)</th>')
     html.append("</tr>")
 
-    # Linha 2 - MODIFICADO: cabeçalho da data anterior é clicável com link
+    # Linha 2
     html.append("<tr>")
-    
-    # Cabeçalho da data anterior clicável com link
-    prev_date_str = prev_date_value.strftime('%Y-%m-%d') if prev_date_value else ''
-    html.append(f'<th><a href="?prev={prev_date_str}" style="text-decoration: none; color: #2563eb; cursor: pointer;">{prev_label} 📅</a></th>')
-    
+    html.append(f"<th>{prev_label}</th>")
     html.append(f"<th>{curr_label}</th>")
     html.append("<th>Volume</th>")
     html.append("<th>Percentual (%)</th>")
@@ -294,7 +287,7 @@ st.title("📊 Tabela diária de Reservatórios")
 try:
     df_raw = load_data_from_url(SHEETS_URL)
     
-    # Filtro por reservatório
+    # Filtro por reservatório - MODIFICADO
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     if col_res_guess:
         reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
@@ -386,6 +379,31 @@ try:
 
     st.subheader("Resultado")
 
+    # Calendário (popover)
+    if prev_options_desc:
+        min_prev = prev_options_desc[-1].date()
+        max_prev = prev_options_desc[0].date()
+    else:
+        min_prev = None
+        max_prev = None
+
+    left, right = st.columns([1, 3])
+    with left:
+        label_btn = f"📅 Alterar data anterior: {dprev.strftime('%d/%m/%Y') if pd.notna(dprev) else '—'}"
+        with st.popover(label_btn, use_container_width=True):
+            st.markdown("**Escolha a data anterior**")
+            default_date = dprev.date() if pd.notna(dprev) else (max_prev or pd.Timestamp.today().date())
+            date_sel = st.date_input(
+                "Data anterior",
+                value=default_date,
+                min_value=min_prev,
+                max_value=(dcurr - pd.Timedelta(days=1)).date() if pd.notna(dcurr) else None,
+                format="DD/MM/YYYY"
+            )
+            if st.button("Aplicar", type="primary"):
+                st.query_params.update({"prev": pd.Timestamp(date_sel).strftime("%Y-%m-%d")})
+                st.rerun()
+
     # Tabela (HTML mesclado na página)
     if result.empty:
         st.info("Nenhum dado encontrado para as datas selecionadas.")
@@ -400,43 +418,9 @@ try:
         prev_label=prev_label,
         curr_label=curr_label,
         volume_group_label=volume_group_label,
-        cota_group_label="Cota (m)",
-        prev_date_value=dprev  # Passar a data anterior para o cabeçalho
+        cota_group_label="Cota (m)"
     )
     st.markdown(html_table_string, unsafe_allow_html=True)
-
-    # POPOVER PARA SELECIONAR DATA - aparece quando há parâmetro 'prev' na URL
-    if "prev" in st.query_params:
-        with st.popover("📅 Selecionar data anterior", open=True):
-            st.markdown("**Escolha a data anterior**")
-            
-            if prev_options_desc:
-                min_prev = prev_options_desc[-1].date()
-                max_prev = prev_options_desc[0].date()
-            else:
-                min_prev = None
-                max_prev = None
-            
-            default_date = dprev.date() if pd.notna(dprev) else (max_prev or pd.Timestamp.today().date())
-            date_sel = st.date_input(
-                "Data anterior",
-                value=default_date,
-                min_value=min_prev,
-                max_value=(dcurr - pd.Timedelta(days=1)).date() if pd.notna(dcurr) else None,
-                format="DD/MM/YYYY"
-            )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Aplicar", type="primary"):
-                    st.query_params.update({"prev": pd.Timestamp(date_sel).strftime("%Y-%m-%d")})
-                    st.rerun()
-            with col2:
-                if st.button("Cancelar"):
-                    # Limpar o parâmetro prev
-                    if "prev" in st.query_params:
-                        del st.query_params["prev"]
-                    st.rerun()
 
     # ===== Botões de exportação =====
     col1, col2 = st.columns([1, 1])
