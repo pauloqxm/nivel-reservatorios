@@ -392,7 +392,7 @@ try:
                 alt.Chart(df_var_nivel)
                 .mark_bar()
                 .encode(
-                    y=alt.Y("Reservatório:N", sort="-x", title=None),
+                    y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Variação do Nível", op="min", order='ascending'), title=None),
                     x=alt.X("Variação do Nível:Q", title="Δ nível (m)"),
                     color=alt.condition("datum['Variação do Nível'] > 0",
                                         alt.value("#2563eb"),  # azul
@@ -415,7 +415,7 @@ try:
             alt.Chart(cap_df)
             .mark_bar(size=16, opacity=0.35, color="#94a3b8")
             .encode(
-                y=alt.Y("Reservatório:N", sort="-x", title=None),
+                y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Volume", op="min", order='descending'), title=None),
                 x=alt.X("Capacidade Total (m³):Q", title="m³"),
                 tooltip=[
                     alt.Tooltip("Reservatório:N"),
@@ -427,7 +427,7 @@ try:
             alt.Chart(cap_df)
             .mark_bar(size=10, color="#2563eb")
             .encode(
-                y=alt.Y("Reservatório:N", sort="-x"),
+                y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Volume", op="min", order='descending')),
                 x=alt.X("Volume:Q"),
                 tooltip=[
                     alt.Tooltip("Reservatório:N"),
@@ -448,7 +448,7 @@ try:
                 alt.Chart(df_var_vol)
                 .mark_bar()
                 .encode(
-                    y=alt.Y("Reservatório:N", sort="-x", title=None),
+                    y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Variação do Volume", op="min", order='ascending'), title=None),
                     x=alt.X("Variação do Volume:Q", title="Δ volume (m³)"),
                     color=alt.condition("datum['Variação do Volume'] > 0",
                                         alt.value("#2563eb"),
@@ -461,6 +461,29 @@ try:
                 .properties(height=h3, title="Δ Volume (m³)")
             )
             st.altair_chart(var_vol_chart.interactive(), use_container_width=True)
+            
+    # Verter (m) - Adicionado
+    if "Verter" in result.columns:
+        df_verter = result[["Reservatório", "Verter"]].dropna()
+        if not df_verter.empty:
+            h4 = max(220, 24 * len(df_verter))
+            verter_chart = (
+                alt.Chart(df_verter)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Verter", op="min", order='descending'), title=None),
+                    x=alt.X("Verter:Q", title="Verter (m)"),
+                    color=alt.condition("datum['Verter'] <= 0",
+                                        alt.value("#34d399"), # Verde (verter)
+                                        alt.value("#facc15")), # Amarelo (não verter)
+                    tooltip=[
+                        alt.Tooltip("Reservatório:N"),
+                        alt.Tooltip("Verter:Q", format=".2f"),
+                    ],
+                )
+                .properties(height=h4, title="Distância para Verter (m)")
+            )
+            st.altair_chart(verter_chart.interactive(), use_container_width=True)
 
     st.caption("As alturas dos gráficos se ajustam automaticamente para exibir todas as linhas. ")
 
