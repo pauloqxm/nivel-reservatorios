@@ -4,8 +4,12 @@ import math
 import unicodedata
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
+
+# Altair: evitar limite de linhas
+alt.data_transformers.disable_max_rows()
 
 # ==========================
 # Configuração
@@ -259,12 +263,12 @@ def render_table_with_group_headers(
     for _, row in df.iterrows():
         html.append("<tr>")
         html.append(f"<td>{row['Reservatório']}</td>")
-        html.append(f"<td>{format_ptbr(row['Capacidade Total (m³)'], casas=2)}</td>")  # 2 casas
+        html.append(f"<td>{format_ptbr(row['Capacidade Total (m³)'], casas=2)}</td>")  # 2 casas (ex.: 2,52)
         html.append(f"<td>{format_ptbr(row['Cota Sangria'], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[prev_label], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[curr_label], casas=2)}</td>")
         html.append(f"<td>{var_icon_html(row['Variação do Nível'])}</td>")
-        html.append(f"<td>{format_m3(row['Variação do Volume'], casas=3)}</td>")       # <<< 3 casas + m³
+        html.append(f"<td>{format_m3(row['Variação do Volume'], casas=3)}</td>")       # 3 casas + m³
         html.append(f"<td>{format_ptbr(row['Volume'], casas=2)}</td>")
         html.append(f"<td>{format_pct_br(row['Percentual'], casas=2)}</td>")
         html.append("</tr>")
@@ -273,7 +277,7 @@ def render_table_with_group_headers(
     st.markdown("\n".join(html), unsafe_allow_html=True)
 
 # ==========================
-# UI (sem barra lateral) + Calendário no popover
+# UI (sem barra lateral) + Calendário no popover + GRÁFICOS
 # ==========================
 st.title("📊 Tabela diária de Reservatórios")
 
@@ -305,6 +309,7 @@ try:
 
     st.subheader("Resultado")
 
+    # ===== Calendário no popover =====
     if prev_options_desc:
         min_prev = prev_options_desc[-1].date()
         max_prev = prev_options_desc[0].date()
@@ -329,58 +334,170 @@ try:
                 st.query_params.update({"prev": pd.Timestamp(date_sel).strftime("%Y-%m-%d")})
                 st.rerun()
 
+    # ===== Tabela =====
     if result.empty:
         st.info("Nenhum dado encontrado para as datas selecionadas.")
-    else:
-        prev_label = dprev.strftime("%d/%m/%Y") if pd.notna(dprev) else "Data Anterior"
-        curr_label = dcurr.strftime("%d/%m/%Y") if pd.notna(dcurr) else "Data Atual"
-        volume_group_label = f"Volume ({curr_label})"
+        st.stop()
 
-        render_table_with_group_headers(
-            result,
-            prev_label=prev_label,
-            curr_label=curr_label,
-            volume_group_label=volume_group_label,
-            cota_group_label="Cota (m)"
+    prev_label = dprev.strftime("%d/%m/%Y") if pd.notna(dprev) else "Data Anterior"
+    curr_label = dcurr.strftime("%d/%m/%Y") if pd.notna(dcurr) else "Data Atual"
+    volume_group_label = f"Volume ({curr_label})"
+
+    render_table_with_group_headers(
+        result,
+        prev_label=prev_label,
+        curr_label=curr_label,
+        volume_group_label=volume_group_label,
+        cota_group_label="Cota (m)"
+    )
+
+    # ===== CSV (formatado) =====
+    csv_df = result.copy()
+    desired_cols = [
+        "Reservatório",
+        "Capacidade Total (m³)",
+        "Cota Sangria",
+        prev_label, curr_label,
+        "Variação do Nível",
+        "Variação do Volume",
+        "Volume", "Percentual"
+    ]
+    def fmt2(v):  # 2 casas
+        return format_ptbr(v, casas=2)
+    def fmt3(v):  # 3 casas
+        return format_ptbr(v, casas=3)
+
+    csv_df["Capacidade Total (m³)"] = csv_df["Capacidade Total (m³)"].apply(fmt2)
+    csv_df["Cota Sangria"] = csv_df["Cota Sangria"].apply(fmt2)
+    csv_df[prev_label] = csv_df[prev_label].apply(fmt2)
+    csv_df[curr_label] = csv_df[curr_label].apply(fmt2)
+    csv_df["Variação do Nível"] = csv_df["Variação do Nível"].apply(fmt2)
+    csv_df["Variação do Volume"] = csv_df["Variação do Volume"].apply(lambda v: (fmt3(v) + " m³") if fmt3(v) != "" else "")
+    csv_df["Volume"] = csv_df["Volume"].apply(fmt2)
+    csv_df["Percentual"] = csv_df["Percentual"].apply(lambda v: format_pct_br(v, casas=2))
+
+    csv_df = csv_df[[c for c in desired_cols if c in csv_df.columns]]
+    csv_bytes = csv_df.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
+    st.download_button("⬇️ Baixar CSV (formatado)", data=csv_bytes,
+                       file_name="reservatorios_tabela_diaria.csv",
+                       mime="text/csv")
+
+    # ==========================
+    # GRÁFICOS (Altair)
+    # ==========================
+    st.markdown("### 📈 Visualizações")
+
+    # 1) Nível (Cota) – atual vs anterior (barras agrupadas)
+    niv_long = result.melt(
+        id_vars=["Reservatório"],
+        value_vars=[prev_label, curr_label],
+        var_name="Data",
+        value_name="Nível (m)"
+    ).dropna(subset=["Nível (m)"])
+
+    if not niv_long.empty:
+        niv_chart = (
+            alt.Chart(niv_long)
+            .mark_bar()
+            .encode(
+                y=alt.Y("Reservatório:N", sort="-x", title=None),
+                x=alt.X("Nível (m):Q", title="Cota (m)"),
+                color=alt.Color("Data:N",
+                                scale=alt.Scale(domain=[prev_label, curr_label],
+                                                range=["#94a3b8", "#2563eb"]),
+                                legend=alt.Legend(title="Data")),
+                tooltip=[
+                    alt.Tooltip("Reservatório:N"),
+                    alt.Tooltip("Data:N"),
+                    alt.Tooltip("Nível (m):Q", format=".2f"),
+                ],
+            )
+            .properties(height=400, title="Cota (m): atual vs. anterior")
         )
+        st.altair_chart(niv_chart.interactive(), use_container_width=True)
 
-        # ===== CSV (formatado) =====
-        csv_df = result.copy()
-        desired_cols = [
-            "Reservatório",
-            "Capacidade Total (m³)",
-            "Cota Sangria",
-            prev_label, curr_label,
-            "Variação do Nível",
-            "Variação do Volume",
-            "Volume", "Percentual"
-        ]
+    # 2) Variação do Nível (Δ m) – barras horizontais com cor por sinal
+    if "Variação do Nível" in result.columns:
+        df_var_nivel = result[["Reservatório", "Variação do Nível"]].dropna()
+        if not df_var_nivel.empty:
+            var_nivel_chart = (
+                alt.Chart(df_var_nivel)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Reservatório:N", sort="-x", title=None),
+                    x=alt.X("Variação do Nível:Q", title="Δ nível (m)"),
+                    color=alt.condition("datum['Variação do Nível'] > 0",
+                                        alt.value("#2563eb"),
+                                        alt.value("#dc2626")),
+                    tooltip=[
+                        alt.Tooltip("Reservatório:N"),
+                        alt.Tooltip("Variação do Nível:Q", format=".2f"),
+                    ],
+                )
+                .properties(height=350, title="Δ Nível (m)")
+            )
+            st.altair_chart(var_nivel_chart.interactive(), use_container_width=True)
 
-        def fmt2(v):  # 2 casas
-            return format_ptbr(v, casas=2)
-        def fmt3(v):  # 3 casas
-            return format_ptbr(v, casas=3)
-
-        csv_df["Capacidade Total (m³)"] = csv_df["Capacidade Total (m³)"].apply(fmt2)
-        csv_df["Cota Sangria"] = csv_df["Cota Sangria"].apply(fmt2)
-        csv_df[prev_label] = csv_df[prev_label].apply(fmt2)
-        csv_df[curr_label] = csv_df[curr_label].apply(fmt2)
-        csv_df["Variação do Nível"] = csv_df["Variação do Nível"].apply(fmt2)
-        csv_df["Variação do Volume"] = csv_df["Variação do Volume"].apply(lambda v: (fmt3(v) + " m³") if fmt3(v) != "" else "")  # <<< 3 casas + m³
-        csv_df["Volume"] = csv_df["Volume"].apply(fmt2)
-        csv_df["Percentual"] = csv_df["Percentual"].apply(lambda v: format_pct_br(v, casas=2))
-
-        csv_df = csv_df[[c for c in desired_cols if c in csv_df.columns]]
-        csv_bytes = csv_df.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
-        st.download_button("⬇️ Baixar CSV (formatado)", data=csv_bytes,
-                           file_name="reservatorios_tabela_diaria.csv",
-                           mime="text/csv")
-
-        st.caption(
-            "• **Variação do Volume** exibida com **três casas** e sufixo **m³**. "
-            "• **Capacidade Total (m³)** com **duas casas** (ex.: 2,52). "
-            "• **Variação do Nível**: seta **azul (▲)** para positivo e **vermelha (▼)** para negativo."
+    # 3) Capacidade vs. Volume – estilo bullet
+    cap_cols = ["Reservatório", "Capacidade Total (m³)", "Volume", "Percentual"]
+    cap_df = result[cap_cols].dropna(subset=["Capacidade Total (m³)", "Volume"])
+    if not cap_df.empty:
+        # Barra de fundo = capacidade total
+        back = (
+            alt.Chart(cap_df)
+            .mark_bar(size=16, opacity=0.35, color="#94a3b8")
+            .encode(
+                y=alt.Y("Reservatório:N", sort="-x", title=None),
+                x=alt.X("Capacidade Total (m³):Q", title="m³"),
+                tooltip=[
+                    alt.Tooltip("Reservatório:N"),
+                    alt.Tooltip("Capacidade Total (m³):Q", format=".2f"),
+                ],
+            )
         )
+        # Barra interna = volume atual
+        front = (
+            alt.Chart(cap_df)
+            .mark_bar(size=10, color="#2563eb")
+            .encode(
+                y=alt.Y("Reservatório:N", sort="-x"),
+                x=alt.X("Volume:Q"),
+                tooltip=[
+                    alt.Tooltip("Reservatório:N"),
+                    alt.Tooltip("Volume:Q", format=".2f"),
+                    alt.Tooltip("Percentual:Q", format=".2f", title="Percentual (%)"),
+                ],
+            )
+        )
+        bullet = (back + front).properties(height=420, title="Volume atual vs Capacidade total (m³)")
+        st.altair_chart(bullet.interactive(), use_container_width=True)
+
+    # 4) Variação do Volume (Δ m³) – 3 casas
+    if "Variação do Volume" in result.columns:
+        df_var_vol = result[["Reservatório", "Variação do Volume"]].dropna()
+        if not df_var_vol.empty:
+            var_vol_chart = (
+                alt.Chart(df_var_vol)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Reservatório:N", sort="-x", title=None),
+                    x=alt.X("Variação do Volume:Q", title="Δ volume (m³)"),
+                    color=alt.condition("datum['Variação do Volume'] > 0",
+                                        alt.value("#2563eb"),
+                                        alt.value("#dc2626")),
+                    tooltip=[
+                        alt.Tooltip("Reservatório:N"),
+                        alt.Tooltip("Variação do Volume:Q", format=".3f"),
+                    ],
+                )
+                .properties(height=350, title="Δ Volume (m³)")
+            )
+            st.altair_chart(var_vol_chart.interactive(), use_container_width=True)
+
+    st.caption(
+        "Dicas: use o filtro de reservatórios para focar a análise. "
+        "Passe o mouse sobre as barras para ver valores exatos."
+    )
 
 except Exception as e:
     st.error(f"Ocorreu um erro ao processar os dados: {str(e)}")
