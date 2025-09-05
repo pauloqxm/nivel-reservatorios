@@ -2,30 +2,23 @@ import io
 import re
 import math
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
 
-# ==========================
-# Configuração e utilidades
-# ==========================
 SHEETS_URL = "https://docs.google.com/spreadsheets/d/1zZ0RCyYj-AzA_dhWzxRziDWjgforbaH7WIoSEd2EKdk/edit?gid=1305065127#gid=1305065127"
 
 @st.cache_data(ttl=900)
 def google_sheets_to_csv_url(url: str) -> str:
-    """
-    Converte URL de edição do Google Sheets para URL de exportação CSV
-    Aceita formatos com /edit ou /view e com fragmento #gid=...
-    """
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     gid = None
     gid_match = re.search(r"[#?]gid=(\d+)", url)
     if gid_match:
         gid = gid_match.group(1)
     if not m:
-        return url  # se não reconhecer, retorna como está (pode já ser CSV)
+        return url
     doc_id = m.group(1)
     if gid is None:
         return f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=csv"
@@ -36,10 +29,6 @@ def strip_accents_lower(s: str) -> str:
     return s.lower()
 
 def to_number(x):
-    """
-    Converte strings como '1.234,56' -> 1234.56, preservando floats/ints/NaN.
-    Remove espaços e caracteres não numéricos (exceto . , -)
-    """
     if x is None or (isinstance(x, float) and math.isnan(x)):
         return math.nan
     if isinstance(x, (int, float)):
@@ -47,14 +36,10 @@ def to_number(x):
     s = str(x).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return math.nan
-    # mantém apenas dígitos, ponto, vírgula e sinal
     s = ''.join(ch for ch in s if ch.isdigit() or ch in ".,-")
-    # se tiver vírgula como decimal, troca por ponto; remove pontos de milhar
-    # heurística: se houver tanto ponto quanto vírgula, considere vírgula como decimal
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     else:
-        # se só vírgula, vira decimal
         s = s.replace(",", ".")
     try:
         return float(s)
@@ -62,16 +47,11 @@ def to_number(x):
         return math.nan
 
 def to_datetime_any(x):
-    """
-    Converte datas em vários formatos (DD/MM/AAAA, AAAA-MM-DD, etc.)
-    """
     if pd.isna(x):
         return pd.NaT
-    # primeiro tenta pandas com dayfirst
     for dayfirst in (True, False):
         try:
-            dt = pd.to_datetime(x, dayfirst=dayfirst, errors="raise")
-            return dt
+            return pd.to_datetime(x, dayfirst=dayfirst, errors="raise")
         except Exception:
             pass
     return pd.NaT
@@ -80,35 +60,31 @@ def to_datetime_any(x):
 def load_data_from_url(url: str) -> pd.DataFrame:
     csv_url = google_sheets_to_csv_url(url)
     df = pd.read_csv(csv_url, dtype=str)
-    # tira espaços dos nomes
     df.columns = [c.strip() for c in df.columns]
     return df
 
 def find_column(df: pd.DataFrame, aliases):
-    """
-    Encontra a primeira coluna em df cujos nomes normalizados batem com a lista de aliases.
-    aliases: lista de strings (já sem acentos e em minúsculo)
-    """
     normalized = {col: strip_accents_lower(col) for col in df.columns}
+    if isinstance(aliases, set):
+        aliases = list(aliases)
+    aliases = set(aliases)
     for col, norm in normalized.items():
         if norm in aliases:
             return col
-    # tentativa mais flexível: procura por alias contido
     for col, norm in normalized.items():
         if any(alias in norm for alias in aliases):
             return col
     return None
 
-def compute_table(df_raw: pd.DataFrame) -> pd.DataFrame:
+def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy()
 
-    # ====== Descobrir as colunas relevantes por nomes comuns ======
-    # Ajuste aqui os aliases se sua planilha usar nomes diferentes
+    # Mapear colunas
     col_reservatorio = find_column(df, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     col_cota_sangria = find_column(df, {"cota sangria", "cota de sangria", "cota_sangria", "cota excedencia"})
     col_data = find_column(df, {"data", "dt", "dia"})
     col_volume = find_column(df, {"volume", "vol"})
-    col_percentual = find_column(df, {"percentual", "perc", "percentual (%)", "volume (%)", "percentual (%)"})
+    col_percentual = find_column(df, {"percentual", "perc", "percentual (%)", "volume (%)"})
     col_nivel = find_column(df, {"nivel", "nível", "cota", "altura"})
 
     required = {
@@ -127,66 +103,77 @@ def compute_table(df_raw: pd.DataFrame) -> pd.DataFrame:
             "Dica: renomeie ou ajuste os aliases no código."
         )
 
-    # ====== Conversões de tipos ======
+    # Conversões
     df[col_data] = df[col_data].apply(to_datetime_any)
     df[col_volume] = df[col_volume].apply(to_number)
     df[col_percentual] = df[col_percentual].apply(to_number)
     df[col_nivel] = df[col_nivel].apply(to_number)
     df[col_cota_sangria] = df[col_cota_sangria].apply(to_number)
-
-    # mantém só linhas com data válida
     df = df.dropna(subset=[col_data])
 
-    # ====== Seleciona registro atual e anterior por reservatório ======
-    # atual = linha com maior data; anterior = maior data < data_atual
-    dfs = []
+    # Determinar as DUAS datas mais recentes globais
+    unique_dates = sorted(df[col_data].dropna().unique())
+    if len(unique_dates) == 0:
+        return pd.DataFrame()
+    data_atual = pd.to_datetime(unique_dates[-1])
+    data_anterior = pd.to_datetime(unique_dates[-2]) if len(unique_dates) >= 2 else pd.NaT
+
+    # Cabeçalhos de coluna com as datas no formato dd/mm/aaaa
+    col_atual_label = data_atual.strftime("%d/%m/%Y") if pd.notna(data_atual) else "Data Atual"
+    col_anterior_label = data_anterior.strftime("%d/%m/%Y") if pd.notna(data_anterior) else "Data Anterior"
+
+    # Preparar saída
+    rows = []
     for res, dfr in df.groupby(col_reservatorio, dropna=True):
-        dfr = dfr.sort_values(col_data)
-        if dfr.empty:
-            continue
-        atual = dfr.iloc[-1]
-        # anterior: última linha com data menor que a atual
-        dfr_ant = dfr[dfr[col_data] < atual[col_data]]
-        anterior = dfr_ant.iloc[-1] if not dfr_ant.empty else None
+        # pegar nível nas datas globais
+        nivel_atual = dfr.loc[dfr[col_data] == data_atual, col_nivel].dropna()
+        nivel_atual = float(nivel_atual.iloc[-1]) if not nivel_atual.empty else math.nan
 
-        # capacidade total = Volume / (Percentual/100) (usando dados da linha atual)
-        vol = atual[col_volume]
-        perc = atual[col_percentual]
-        if perc and not math.isnan(perc) and perc != 0:
-            capacidade_total = vol / (perc / 100.0) if vol and not math.isnan(vol) else math.nan
+        if pd.notna(data_anterior):
+            nivel_anterior = dfr.loc[dfr[col_data] == data_anterior, col_nivel].dropna()
+            nivel_anterior = float(nivel_anterior.iloc[-1]) if not nivel_anterior.empty else math.nan
         else:
-            capacidade_total = math.nan
+            nivel_anterior = math.nan
 
-        # variação do nível = nível_atual - nível_anterior
-        nivel_atual = atual[col_nivel]
-        nivel_ant = anterior[col_nivel] if anterior is not None else math.nan
-        if (nivel_atual is None or math.isnan(nivel_atual)) or (nivel_ant is None or math.isnan(nivel_ant)):
-            variacao_nivel = math.nan
+        # capacidade total = Volume / (Percentual/100) usando a linha do dia ATUAL (global)
+        vol_atual = dfr.loc[dfr[col_data] == data_atual, col_volume].dropna()
+        vol_atual = float(vol_atual.iloc[-1]) if not vol_atual.empty else math.nan
+
+        perc_atual = dfr.loc[dfr[col_data] == data_atual, col_percentual].dropna()
+        perc_atual = float(perc_atual.iloc[-1]) if not perc_atual.empty else math.nan
+
+        if perc_atual and not math.isnan(perc_atual) and perc_atual != 0:
+            cap_total = vol_atual / (perc_atual / 100.0) if vol_atual and not math.isnan(vol_atual) else math.nan
         else:
-            variacao_nivel = nivel_atual - nivel_ant
+            cap_total = math.nan
 
-        # datas para exibição
-        data_atual = atual[col_data]
-        data_anterior = anterior[col_data] if anterior is not None else pd.NaT
+        # cota de sangria (da linha do dia atual, se existir; senão último valor conhecido)
+        cota_s_atual = dfr.loc[dfr[col_data] == data_atual, col_cota_sangria].dropna()
+        if not cota_s_atual.empty:
+            cota_sangria_val = float(cota_s_atual.iloc[-1])
+        else:
+            # fallback: último valor não-nulo
+            cota_s_hist = dfr[col_cota_sangria].dropna()
+            cota_sangria_val = float(cota_s_hist.iloc[-1]) if not cota_s_hist.empty else math.nan
 
-        # cota de sangria (pega a da linha atual quando disponível)
-        cota_sangria = atual[col_cota_sangria]
+        # variação (nível atual - nível anterior)
+        variacao = (nivel_atual - nivel_anterior) if (not math.isnan(nivel_atual) and not math.isnan(nivel_anterior)) else math.nan
 
-        dfs.append({
+        row = {
             "Reservatório": res,
-            "Cota Sangria": cota_sangria,
-            "Data Anterior": data_anterior.date() if pd.notna(data_anterior) else None,
-            "Data Atual": data_atual.date() if pd.notna(data_atual) else None,
-            "Capacidade Total (m³)": capacidade_total,
-            "Variação do Nível": variacao_nivel,
-        })
+            "Cota Sangria": cota_sangria_val,
+            col_anterior_label: nivel_anterior,  # << Nível na data anterior
+            col_atual_label: nivel_atual,        # << Nível na data atual
+            "Capacidade Total (m³)": cap_total,
+            "Variação do Nível": variacao,
+        }
+        rows.append(row)
 
-    out = pd.DataFrame(dfs)
-
-    # Ordena por nome e coloca formatos bonitos
+    out = pd.DataFrame(rows)
     if not out.empty:
-        out = out.sort_values("Reservatório").reset_index(drop=True)
-
+        # Ordena pelas colunas principais
+        order = ["Reservatório", "Cota Sangria", col_anterior_label, col_atual_label, "Capacidade Total (m³)", "Variação do Nível"]
+        out = out.reindex(columns=order).sort_values("Reservatório").reset_index(drop=True)
     return out
 
 # ==========================
@@ -208,14 +195,13 @@ with st.sidebar:
         url = None
         uploaded_file = st.file_uploader("Envie um CSV com a mesma estrutura", type=["csv"])
 
-# Carregamento
 try:
     if uploaded_file is not None:
         df_raw = pd.read_csv(uploaded_file, dtype=str)
     else:
         df_raw = load_data_from_url(url)
 
-    # Filtro opcional por reservatório (antes de computar, se desejar)
+    # filtro opcional antes do cálculo
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     if col_res_guess:
         reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique())
@@ -224,35 +210,35 @@ try:
     else:
         df_filtered = df_raw
 
-    result = compute_table(df_filtered)
+    result = compute_table_global_dates(df_filtered)
 
-    # Formatação e exibição
     st.subheader("Resultado")
     if result.empty:
-        st.info("Nenhum dado encontrado com a estrutura esperada.")
+        st.info("Nenhum dado com as duas datas mais recentes foi encontrado.")
     else:
-        # Formata números
+        # Formatação
         result_fmt = result.copy()
-        # Capacidade em m³ com separador de milhar (sem casas decimais se muito grande)
-        result_fmt["Capacidade Total (m³)"] = result_fmt["Capacidade Total (m³)"].apply(
-            lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
-        )
-        # Variação com 2 casas decimais
-        result_fmt["Variação do Nível"] = result_fmt["Variação do Nível"].apply(
-            lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
-        )
-        # Cota de sangria com 2 casas
-        result_fmt["Cota Sangria"] = result_fmt["Cota Sangria"].apply(
-            lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
-        )
+        # números com separador pt-BR
+        for col in result_fmt.columns:
+            if col in ("Reservatório",):
+                continue
+            if col == "Capacidade Total (m³)":
+                result_fmt[col] = result_fmt[col].apply(
+                    lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                )
+            elif col in ("Cota Sangria", "Variação do Nível"):
+                result_fmt[col] = result_fmt[col].apply(
+                    lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                )
+            else:
+                # As colunas de data (cabeçalho com dd/mm/aaaa) contêm Nível → 2 casas
+                result_fmt[col] = result_fmt[col].apply(
+                    lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                )
 
-        st.dataframe(
-            result_fmt,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(result_fmt, use_container_width=True, hide_index=True)
 
-        # Download do CSV bruto (sem formatação de string)
+        # CSV sem formatação
         csv_bytes = result.to_csv(index=False).encode("utf-8")
         st.download_button(
             "⬇️ Baixar CSV",
@@ -262,9 +248,9 @@ try:
         )
 
         st.caption(
-            "• **Capacidade Total (m³)** = Volume atual ÷ (Percentual atual ÷ 100). "
-            "• **Variação do Nível** = Nível (Data Atual) − Nível (Data Anterior). "
-            "• Quando não há registro no dia anterior, a variação fica em branco."
+            "As colunas com datas no cabeçalho mostram o **Nível** de cada reservatório na **data anterior** e na **data atual** "
+            "(duas datas mais recentes da planilha). • **Capacidade Total (m³)** = Volume do dia atual ÷ (Percentual do dia atual ÷ 100). "
+            "• **Variação do Nível** = Nível (data atual) − Nível (data anterior)."
         )
 
 except Exception as e:
