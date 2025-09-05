@@ -144,7 +144,7 @@ def compute_table_global_dates(
 
     data_atual = unique_dates[-1]
     prev_candidates = [d for d in unique_dates if d < data_atual]
-    # lista de datas anteriores disponíveis (ordem decrescente, para menu/calendário)
+    # lista de datas anteriores disponíveis (ordem decrescente)
     prev_options_desc = prev_candidates[::-1]
 
     if forced_prev_date and forced_prev_date in prev_candidates:
@@ -162,7 +162,7 @@ def compute_table_global_dates(
         nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,    col_nivel)
         nivel_anterior = last_scalar_on_date(dfr, col_data, data_anterior, col_nivel) if pd.notna(data_anterior) else math.nan
 
-        # Capacidade Total a partir do dia atual
+        # Volume/Percentual do dia ATUAL (para capacidade total e exibição)
         vol_atual  = last_scalar_on_date(dfr, col_data, data_atual, col_volume)
         perc_atual = last_scalar_on_date(dfr, col_data, data_atual, col_percentual)
         cap_total = vol_atual / (perc_atual / 100.0) if (pd.notna(vol_atual) and pd.notna(perc_atual) and perc_atual != 0) else math.nan
@@ -184,17 +184,25 @@ def compute_table_global_dates(
             col_atual_label:    nivel_atual,     # Nível (m) na data atual
             "Capacidade Total (m³)": cap_total,
             "Variação do Nível": variacao,
+            # Novas colunas no final:
+            "Volume": vol_atual,
+            "Percentual": perc_atual,
         })
 
     out = pd.DataFrame(rows)
     if not out.empty:
-        order = ["Reservatório", "Cota Sangria", col_anterior_label, col_atual_label, "Capacidade Total (m³)", "Variação do Nível"]
+        order = [
+            "Reservatório", "Cota Sangria",
+            col_anterior_label, col_atual_label,
+            "Capacidade Total (m³)", "Variação do Nível",
+            "Volume", "Percentual"
+        ]
         out = out.reindex(columns=order).sort_values("Reservatório").reset_index(drop=True)
 
     return out, data_anterior, data_atual, prev_options_desc
 
 # ==========================
-# Renderização com cabeçalho mesclado “Cota (m)”
+# Renderização com dois grupos de cabeçalho: “Cota (m)” e “Volume (data)”
 # ==========================
 def format_ptbr(num, casas=2, inteiro=False):
     if pd.isna(num):
@@ -205,10 +213,17 @@ def format_ptbr(num, casas=2, inteiro=False):
         s = f"{num:,.{casas}f}"
     return s.replace(",", "temp").replace(".", ",").replace("temp", ".")
 
-def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label: str, group_label="Cota (m)"):
-    """Renderiza uma tabela HTML com cabeçalho mesclado sobre as duas colunas de data."""
+def render_table_with_group_headers(
+    df: pd.DataFrame,
+    prev_label: str,
+    curr_label: str,
+    volume_group_label: str,
+    cota_group_label: str = "Cota (m)"
+):
+    """Renderiza uma tabela HTML com dois grupos mesclados de cabeçalho."""
     left_fixed = ["Reservatório", "Cota Sangria"]
-    right_fixed = ["Capacidade Total (m³)", "Variação do Nível)"]
+    right_fixed = ["Capacidade Total (m³)", "Variação do Nível"]
+    tail_group_cols = ["Volume", "Percentual"]  # novas colunas
 
     css = """
     <style>
@@ -226,15 +241,18 @@ def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label
     html.append("<tr>")
     html.append(f'<th rowspan="2">{left_fixed[0]}</th>')
     html.append(f'<th rowspan="2">{left_fixed[1]}</th>')
-    html.append(f'<th class="group-head" colspan="2">{group_label}</th>')
-    html.append(f'<th rowspan="2">Capacidade Total (m³)</th>')
-    html.append(f'<th rowspan="2">Variação do Nível</th>')
+    html.append(f'<th class="group-head" colspan="2">{cota_group_label}</th>')
+    html.append(f'<th rowspan="2">{right_fixed[0]}</th>')
+    html.append(f'<th rowspan="2">{right_fixed[1]}</th>')
+    html.append(f'<th class="group-head" colspan="2">{volume_group_label}</th>')
     html.append("</tr>")
 
-    # Linha 2 do cabeçalho (datas) — labels simples; o calendário fica fora, acima
+    # Linha 2 do cabeçalho (subtítulos)
     html.append("<tr>")
     html.append(f"<th>{prev_label}</th>")
     html.append(f"<th>{curr_label}</th>")
+    html.append(f"<th>Volume</th>")
+    html.append(f"<th>Percentual (%)</th>")
     html.append("</tr>")
     html.append("</thead>")
 
@@ -242,12 +260,15 @@ def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label
     html.append("<tbody>")
     for _, row in df.iterrows():
         html.append("<tr>")
-        html.append(f"<td>{row['Reservatório']}</td>")
-        html.append(f"<td>{format_ptbr(row['Cota Sangria'], casas=2)}</td>")
+        html.append(f"<td>{row[left_fixed[0]]}</td>")
+        html.append(f"<td>{format_ptbr(row[left_fixed[1]], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[prev_label], casas=2)}</td>")
         html.append(f"<td>{format_ptbr(row[curr_label], casas=2)}</td>")
-        html.append(f"<td>{format_ptbr(row['Capacidade Total (m³)'], inteiro=True)}</td>")
-        html.append(f"<td>{format_ptbr(row['Variação do Nível'], casas=2)}</td>")
+        html.append(f"<td>{format_ptbr(row[right_fixed[0]], inteiro=True)}</td>")
+        html.append(f"<td>{format_ptbr(row[right_fixed[1]], casas=2)}</td>")
+        # Novas colunas no final
+        html.append(f"<td>{format_ptbr(row['Volume'], casas=2)}</td>")         # 2 casas, p.ex. 84,11
+        html.append(f"<td>{format_ptbr(row['Percentual'], casas=2)}</td>")     # 2 casas
         html.append("</tr>")
     html.append("</tbody></table>")
 
@@ -314,7 +335,6 @@ try:
                 format="DD/MM/YYYY"
             )
             if st.button("Aplicar", type="primary"):
-                # Atualiza a URL e recarrega
                 st.query_params.update({"prev": pd.Timestamp(date_sel).strftime("%Y-%m-%d")})
                 st.rerun()
 
@@ -324,7 +344,15 @@ try:
     else:
         prev_label = dprev.strftime("%d/%m/%Y") if pd.notna(dprev) else "Data Anterior"
         curr_label = dcurr.strftime("%d/%m/%Y") if pd.notna(dcurr) else "Data Atual"
-        render_table_with_group_header(result, prev_label, curr_label, group_label="Cota (m)")
+        volume_group_label = f"Volume ({curr_label})"  # título mesclado sobre Volume e Percentual
+
+        render_table_with_group_headers(
+            result,
+            prev_label=prev_label,
+            curr_label=curr_label,
+            volume_group_label=volume_group_label,
+            cota_group_label="Cota (m)"
+        )
 
         # Download CSV (dados crus)
         csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
@@ -333,10 +361,13 @@ try:
                            mime="text/csv")
 
         st.caption(
-            "Clique em **📅 Alterar data anterior** para abrir o calendário. "
-            "O cabeçalho **Cota (m)** agrupa as duas colunas de nível. "
+            "O cabeçalho **Cota (m)** agrupa as duas colunas de nível e o cabeçalho **"
+            + volume_group_label +
+            "** agrupa **Volume** e **Percentual** do dia atual. "
+            "Use **📅 Alterar data anterior** para selecionar outra data de comparação. "
             "• **Capacidade Total (m³)** = Volume (dia atual) ÷ (Percentual (dia atual) ÷ 100). "
-            "• **Variação do Nível** = Nível (data atual) − Nível (data anterior)."
+            "• **Variação do Nível** = Nível (data atual) − Nível (data anterior). "
+            "• **Volume** é exibido com duas casas decimais (ex.: 84,11)."
         )
 
 except Exception as e:
