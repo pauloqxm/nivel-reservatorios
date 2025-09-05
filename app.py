@@ -242,7 +242,7 @@ def render_table_with_group_headers(
     # Linha 1
     html.append("<tr>")
     html.append('<th rowspan="2">Reservatório</th>')
-    html.append('<th rowspan="2">Capacidade Total (m³)</th>')
+    html.append('<th rowspan="2">Capacidade Total (hm³)</th>')
     html.append('<th rowspan="2">Cota Sangria</th>')
     html.append(f'<th class="group-head" colspan="2">{cota_group_label}</th>')
     html.append('<th rowspan="2">Variação do Nível</th>')
