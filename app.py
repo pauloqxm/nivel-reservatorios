@@ -81,16 +81,19 @@ def find_column(df: pd.DataFrame, aliases):
 # ==========================
 # Núcleo de cálculo
 # ==========================
-def compute_table_global_dates(df_raw: pd.DataFrame, forced_prev_date: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
+def compute_table_global_dates(
+    df_raw: pd.DataFrame,
+    forced_prev_date: pd.Timestamp | None = None
+) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp, list[pd.Timestamp]]:
     """
-    Retorna (df, data_anterior, data_atual). Cabeçalhos de datas serão dd/mm/aaaa.
-    Se forced_prev_date for passado, usa-o como 'data anterior' (se existir).
+    Retorna (df, data_anterior, data_atual, lista_datas_anteriores).
+    Cabeçalhos de datas serão dd/mm/aaaa.
+    forced_prev_date: se informado e existir na série, será usado como 'data anterior'.
     """
     def last_scalar_on_date(dfr: pd.DataFrame, date_col: str, target_date, value_col: str) -> float:
         """Último valor numérico (float) para a data exata target_date. Sempre escalar ou NaN."""
         if pd.isna(target_date):
             return math.nan
-        # Garante comparação só por data (normalizada)
         ddates = pd.to_datetime(dfr[date_col], errors="coerce").dt.normalize()
         sel = dfr.loc[ddates == pd.Timestamp(target_date).normalize(), value_col]
         if sel.empty:
@@ -137,11 +140,13 @@ def compute_table_global_dates(df_raw: pd.DataFrame, forced_prev_date: pd.Timest
     unique_dates = pd.to_datetime(df[col_data].dropna().unique(), errors="coerce")
     unique_dates = pd.Series(unique_dates).dropna().sort_values().unique().tolist()
     if not unique_dates:
-        return pd.DataFrame(), pd.NaT, pd.NaT
+        return pd.DataFrame(), pd.NaT, pd.NaT, []
 
     data_atual = unique_dates[-1]
-    # Candidatas de 'data anterior' (antes da atual)
     prev_candidates = [d for d in unique_dates if d < data_atual]
+    # lista de datas anteriores disponíveis (ordem decrescente)
+    prev_options_desc = prev_candidates[::-1]
+
     if forced_prev_date and forced_prev_date in prev_candidates:
         data_anterior = forced_prev_date
     else:
@@ -186,10 +191,10 @@ def compute_table_global_dates(df_raw: pd.DataFrame, forced_prev_date: pd.Timest
         order = ["Reservatório", "Cota Sangria", col_anterior_label, col_atual_label, "Capacidade Total (m³)", "Variação do Nível"]
         out = out.reindex(columns=order).sort_values("Reservatório").reset_index(drop=True)
 
-    return out, data_anterior, data_atual
+    return out, data_anterior, data_atual, prev_options_desc
 
 # ==========================
-# Renderização com “célula mesclada” (HTML)
+# Renderização com cabeçalho mesclado “Cota (m)” e seletor no cabeçalho
 # ==========================
 def format_ptbr(num, casas=2, inteiro=False):
     if pd.isna(num):
@@ -198,33 +203,31 @@ def format_ptbr(num, casas=2, inteiro=False):
         s = f"{num:,.0f}"
     else:
         s = f"{num:,.{casas}f}"
-    # formatação pt-BR
     return s.replace(",", "temp").replace(".", ",").replace("temp", ".")
 
-def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label: str, group_label="Cota (m)"):
-    """Renderiza uma tabela HTML com cabeçalho mesclado sobre as duas colunas de data."""
-    # nomes das colunas
-    cols = list(df.columns)
-    # índices das colunas de data
-    i_prev = cols.index(prev_label)
-    i_curr = cols.index(curr_label)
+def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label: str, prev_menu_html: str, group_label="Cota (m)"):
+    """Renderiza uma tabela HTML com cabeçalho mesclado sobre as duas colunas de data.
+       O cabeçalho da data anterior recebe um dropdown (prev_menu_html)."""
+    left_fixed = ["Reservatório", "Cota Sangria"]
+    right_fixed = ["Capacidade Total (m³)", "Variação do Nível"]
 
-    # CSS simples para deixar bonito
     css = """
     <style>
     table.cota-table {width: 100%; border-collapse: collapse; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;}
-    table.cota-table th, table.cota-table td {border: 1px solid #e5e7eb; padding: 8px 10px; text-align: right;}
+    table.cota-table th, table.cota-table td {border: 1px solid #e5e7eb; padding: 8px 10px; text-align: right; white-space: nowrap;}
     table.cota-table th {background: #f8fafc; font-weight: 600; color: #111827;}
     table.cota-table td:first-child, table.cota-table th:first-child {text-align: left;}
-    table.cota-table td:nth-child(2), table.cota-table th:nth-child(2) {text-align: right;}
     .group-head {text-align: center; background: #eef2ff;}
+    /* Dropdown */
+    .date-dropdown { position: relative; display: inline-block; }
+    .date-dropdown > a { text-decoration: none; color: #0f172a; }
+    .date-dropdown .menu { display: none; position: absolute; z-index: 5; min-width: 160px; background: #fff; border: 1px solid #e5e7eb; box-shadow: 0 8px 16px rgba(0,0,0,.08); border-radius: 8px; padding: 6px 0; }
+    .date-dropdown .menu a { display: block; padding: 8px 12px; color: #0f172a; text-decoration: none; }
+    .date-dropdown .menu a:hover { background: #f1f5f9; }
+    .date-dropdown:hover .menu { display: block; }
+    .caret { margin-left: 6px; font-size: 11px; color: #334155; }
     </style>
     """
-
-    # Cabeçalho em duas linhas: mescla para “Cota (m)”
-    # Colunas fixas à esquerda e direita têm rowspan=2
-    left_fixed = ["Reservatório", "Cota Sangria"]
-    right_fixed = ["Capacidade Total (m³)", "Variação do Nível"]
 
     html = [css, '<table class="cota-table">', "<thead>"]
 
@@ -237,9 +240,9 @@ def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label
     html.append(f'<th rowspan="2">{right_fixed[1]}</th>')
     html.append("</tr>")
 
-    # Linha 2 do cabeçalho (datas)
+    # Linha 2 do cabeçalho (datas) — a data anterior recebe o dropdown clicável
     html.append("<tr>")
-    html.append(f"<th>{prev_label}</th>")
+    html.append(f"<th>{prev_menu_html}</th>")
     html.append(f"<th>{curr_label}</th>")
     html.append("</tr>")
     html.append("</thead>")
@@ -259,68 +262,62 @@ def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label
 
     st.markdown("\n".join(html), unsafe_allow_html=True)
 
+def build_prev_header_dropdown(prev_label: str, prev_options: list[pd.Timestamp]) -> str:
+    """Constrói o HTML do cabeçalho 'data anterior' com dropdown de datas anteriores (links via query params)."""
+    items = []
+    # Limita a, por exemplo, 15 opções mais recentes
+    for d in prev_options[:15]:
+        iso = pd.Timestamp(d).strftime("%Y-%m-%d")
+        human = pd.Timestamp(d).strftime("%d/%m/%Y")
+        # Link recarrega a página com ?prev=YYYY-MM-DD
+        items.append(f'<a href="?prev={iso}">{human}</a>')
+    menu = "".join(items) if items else '<div style="padding:8px 12px; color:#64748b;">Sem outras datas</div>'
+    return f'''
+    <div class="date-dropdown">
+      <a href="?prev={pd.Timestamp(prev_label, dayfirst=True) if False else '#'}">{prev_label}<span class="caret">▼</span></a>
+      <div class="menu">
+        {menu}
+      </div>
+    </div>
+    '''
+
 # ==========================
-# UI
+# UI (sem menu lateral)
 # ==========================
 st.title("📊 Tabela diária de Reservatórios")
 
-with st.sidebar:
-    st.markdown("### Fonte dos dados")
-    mode = st.radio("Escolha a fonte", ("Google Sheets (link padrão)", "Enviar CSV (arquivo local)"), index=0)
-    if mode == "Google Sheets (link padrão)":
-        url = st.text_input("URL do Google Sheets", value=SHEETS_URL)
-        uploaded_file = None
-    else:
-        url = None
-        uploaded_file = st.file_uploader("Envie um CSV com a mesma estrutura", type=["csv"])
-
 try:
-    if uploaded_file is not None:
-        df_raw = pd.read_csv(uploaded_file, dtype=str)
-        st.success(f"CSV carregado: {uploaded_file.name}")
-    else:
-        df_raw = load_data_from_url(url)
-        st.success("Dados carregados do Google Sheets")
+    # Carrega dados (sempre do Sheets, sem menu lateral)
+    df_raw = load_data_from_url(SHEETS_URL)
 
+    # Prévia opcional
     with st.expander("Visualizar dados brutos"):
         st.dataframe(df_raw.head(), use_container_width=True)
 
-    # Descobrir todas as datas disponíveis (normalizadas) para o seletor
-    col_data_guess = find_column(df_raw, {"data", "dt", "dia"})
-    date_options = []
-    if col_data_guess:
-        dnorm = pd.to_datetime(df_raw[col_data_guess], errors="coerce").dropna().dt.normalize()
-        if not dnorm.empty:
-            udates = sorted(dnorm.unique())
-            data_atual_default = udates[-1]
-            prev_cands = [d for d in udates if d < data_atual_default]
-            # opções para o seletor (apenas anteriores à atual)
-            opts = prev_cands[::-1]  # mais recentes primeiro
-            date_options = [pd.Timestamp(d) for d in opts]
-
+    # Lê data anterior selecionada da URL (?prev=YYYY-MM-DD)
+    q = st.query_params
     forced_prev = None
-    if date_options:
-        forced_prev_str = st.sidebar.selectbox(
-            "Selecionar data anterior",
-            [d.strftime("%d/%m/%Y") for d in date_options],
-            index=0,
-            help="Escolha outra data para comparar com o dia atual."
-        )
-        forced_prev = pd.to_datetime(forced_prev_str, dayfirst=True)
+    if "prev" in q and q["prev"]:
+        try:
+            forced_prev = pd.to_datetime(q["prev"], errors="coerce").normalize()
+        except Exception:
+            forced_prev = None
 
-    # Filtro opcional por reservatório
+    # Filtro opcional por reservatório (em linha)
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     if col_res_guess:
-        reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
-        sel = st.multiselect("Filtrar reservatórios (opcional)", reservatorios, [])
+        # Caixa de seleção em linha (sem sidebar)
+        with st.container():
+            reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
+            sel = st.multiselect("Filtrar reservatórios (opcional)", reservatorios, [], placeholder="Selecione…")
         df_filtered = df_raw[df_raw[col_res_guess].isin(sel)] if sel else df_raw
     else:
         df_filtered = df_raw
         st.warning("Não foi possível identificar a coluna de Reservatório.")
 
-    # Processar
+    # Processa
     with st.spinner("Processando dados..."):
-        result, dprev, dcurr = compute_table_global_dates(df_filtered, forced_prev_date=forced_prev)
+        result, dprev, dcurr, prev_options_desc = compute_table_global_dates(df_filtered, forced_prev_date=forced_prev)
 
     st.subheader("Resultado")
     if result.empty:
@@ -329,8 +326,11 @@ try:
         prev_label = dprev.strftime("%d/%m/%Y") if pd.notna(dprev) else "Data Anterior"
         curr_label = dcurr.strftime("%d/%m/%Y") if pd.notna(dcurr) else "Data Atual"
 
-        # Render com “célula mesclada” Cota (m)
-        render_table_with_group_header(result, prev_label, curr_label, group_label="Cota (m)")
+        # Monta o dropdown no cabeçalho da data anterior
+        prev_header_html = build_prev_header_dropdown(prev_label, prev_options_desc)
+
+        # Render com “célula mesclada” Cota (m) e dropdown clicável no cabeçalho da data anterior
+        render_table_with_group_header(result, prev_label, curr_label, prev_header_html, group_label="Cota (m)")
 
         # Download CSV (dados crus)
         csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
@@ -339,8 +339,8 @@ try:
                            mime="text/csv")
 
         st.caption(
-            "O cabeçalho **Cota (m)** agrupa os níveis medidos nas duas datas. "
-            "Você pode ajustar a **data anterior** na barra lateral. "
+            "Clique na **data da coluna anterior** para escolher outra data. "
+            "O cabeçalho **Cota (m)** agrupa as duas colunas de nível. "
             "• **Capacidade Total (m³)** = Volume (dia atual) ÷ (Percentual (dia atual) ÷ 100). "
             "• **Variação do Nível** = Nível (data atual) − Nível (data anterior)."
         )
