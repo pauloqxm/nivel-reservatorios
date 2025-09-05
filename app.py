@@ -4,7 +4,6 @@ import math
 import unicodedata
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
 
@@ -29,8 +28,7 @@ def google_sheets_to_csv_url(url: str) -> str:
     return f"{base}&gid={gid}" if gid else base
 
 def strip_accents_lower(s: str) -> str:
-    s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-    return s.lower()
+    return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn').lower()
 
 def to_number(x):
     """'1.234,56' -> 1234.56; preserva NaN."""
@@ -52,16 +50,12 @@ def to_number(x):
         return math.nan
 
 def to_datetime_any(x):
-    """Converte datas em vários formatos, retornando Timestamp ou NaT."""
-    if pd.isna(x):
-        return pd.NaT
+    """Converte datas em vários formatos, retornando Timestamp normalizado (sem hora) ou NaT."""
     try:
-        # Tenta converter removendo timezone se presente
-        if isinstance(x, str) and 'T' in x:
-            x = x.split('T')[0]
-        return pd.to_datetime(x, dayfirst=True, errors="coerce")
+        ts = pd.to_datetime(x, dayfirst=True, errors="coerce")
     except Exception:
         return pd.NaT
+    return ts.normalize() if pd.notna(ts) else pd.NaT
 
 @st.cache_data(ttl=900)
 def load_data_from_url(url: str) -> pd.DataFrame:
@@ -85,45 +79,30 @@ def find_column(df: pd.DataFrame, aliases):
     return None
 
 # ==========================
-# Cálculo principal - CORREÇÃO PRINCIPAL
+# Núcleo de cálculo
 # ==========================
-def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
+def compute_table_global_dates(df_raw: pd.DataFrame, forced_prev_date: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
+    """
+    Retorna (df, data_anterior, data_atual). Cabeçalhos de datas serão dd/mm/aaaa.
+    Se forced_prev_date for passado, usa-o como 'data anterior' (se existir).
+    """
     def last_scalar_on_date(dfr: pd.DataFrame, date_col: str, target_date, value_col: str) -> float:
-        """
-        Retorna o último valor numérico (float) para a data exata target_date.
-        Garante SEMPRE um escalar (ou NaN).
-        """
+        """Último valor numérico (float) para a data exata target_date. Sempre escalar ou NaN."""
         if pd.isna(target_date):
             return math.nan
-        
-        # Converte ambas as datas para o mesmo formato (apenas data, sem hora)
-        try:
-            # Garante que target_date seja apenas data
-            target_date_only = pd.Timestamp(target_date).normalize()
-            
-            # Converte a coluna de datas para o mesmo formato
-            dfr_dates = pd.to_datetime(dfr[date_col]).dt.normalize()
-            
-            # Encontra registros com a mesma data
-            mask = dfr_dates == target_date_only
-            sel = dfr.loc[mask, value_col]
-            
-            if sel.empty:
-                return math.nan
-                
-            # Converte para numérico e pega o último valor válido
-            sel_numeric = pd.to_numeric(sel, errors='coerce').dropna()
-            if sel_numeric.empty:
-                return math.nan
-                
-            return float(sel_numeric.iloc[-1])
-            
-        except Exception:
+        # Garante comparação só por data (normalizada)
+        ddates = pd.to_datetime(dfr[date_col], errors="coerce").dt.normalize()
+        sel = dfr.loc[ddates == pd.Timestamp(target_date).normalize(), value_col]
+        if sel.empty:
             return math.nan
+        sel = pd.to_numeric(sel, errors="coerce").dropna()
+        if sel.empty:
+            return math.nan
+        return float(sel.iloc[-1])
 
     df = df_raw.copy()
 
-    # Mapear colunas por nomes comuns/aliases
+    # Mapear colunas
     col_reservatorio = find_column(df, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     col_cota_sangria = find_column(df, {"cota sangria", "cota de sangria", "cota_sangria", "cota excedencia"})
     col_data         = find_column(df, {"data", "dt", "dia"})
@@ -140,53 +119,48 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
         "Nivel": col_nivel,
     }
     missing = [k for k, v in required.items() if v is None]
-    if len(missing) > 0:
+    if missing:
         raise ValueError(
             "Não foi possível identificar as colunas na planilha. "
-            f"Faltando: {', '.join(missing)}. "
-            "Renomeie na planilha ou ajuste os aliases no código."
+            f"Faltando: {', '.join(missing)}. Ajuste os aliases no código ou renomeie na planilha."
         )
 
-    # Conversões robustas
+    # Conversões
     df[col_data]         = df[col_data].apply(to_datetime_any)
     df[col_volume]       = df[col_volume].apply(to_number)
     df[col_percentual]   = df[col_percentual].apply(to_number)
     df[col_nivel]        = df[col_nivel].apply(to_number)
     df[col_cota_sangria] = df[col_cota_sangria].apply(to_number)
-
     df = df.dropna(subset=[col_data])
-    if len(df) == 0:
-        return pd.DataFrame()
 
-    # Datas globais mais recentes (apenas a parte da data, sem hora)
-    unique_dates = pd.Series(df[col_data].dropna().unique())
-    unique_dates = pd.to_datetime(unique_dates, errors="coerce").dropna()
-    unique_dates = unique_dates.dt.normalize().unique()  # Remove duplicatas e normaliza
-    unique_dates = sorted(unique_dates)
-    
-    if len(unique_dates) == 0:
-        return pd.DataFrame()
-        
-    data_atual    = unique_dates[-1]
-    data_anterior = unique_dates[-2] if len(unique_dates) >= 2 else pd.NaT
+    # Datas disponíveis (normalizadas, ordenadas)
+    unique_dates = pd.to_datetime(df[col_data].dropna().unique(), errors="coerce")
+    unique_dates = pd.Series(unique_dates).dropna().sort_values().unique().tolist()
+    if not unique_dates:
+        return pd.DataFrame(), pd.NaT, pd.NaT
 
-    # Rótulos "dd/mm/aaaa"
+    data_atual = unique_dates[-1]
+    # Candidatas de 'data anterior' (antes da atual)
+    prev_candidates = [d for d in unique_dates if d < data_atual]
+    if forced_prev_date and forced_prev_date in prev_candidates:
+        data_anterior = forced_prev_date
+    else:
+        data_anterior = prev_candidates[-1] if prev_candidates else pd.NaT
+
+    # Cabeçalhos com as datas (formatos dd/mm/aaaa)
     col_atual_label    = data_atual.strftime("%d/%m/%Y") if pd.notna(data_atual) else "Data Atual"
     col_anterior_label = data_anterior.strftime("%d/%m/%Y") if pd.notna(data_anterior) else "Data Anterior"
 
     rows = []
     for res, dfr in df.groupby(col_reservatorio, dropna=True):
-        # NÍVEIS nas datas globais
-        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual, col_nivel)
+        # Níveis nas duas datas
+        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,    col_nivel)
         nivel_anterior = last_scalar_on_date(dfr, col_data, data_anterior, col_nivel) if pd.notna(data_anterior) else math.nan
 
-        # Volume/Percentual do dia ATUAL para capacidade total
+        # Capacidade Total a partir do dia atual
         vol_atual  = last_scalar_on_date(dfr, col_data, data_atual, col_volume)
         perc_atual = last_scalar_on_date(dfr, col_data, data_atual, col_percentual)
-        if pd.notna(perc_atual) and perc_atual != 0 and pd.notna(vol_atual):
-            cap_total = vol_atual / (perc_atual / 100.0)
-        else:
-            cap_total = math.nan
+        cap_total = vol_atual / (perc_atual / 100.0) if (pd.notna(vol_atual) and pd.notna(perc_atual) and perc_atual != 0) else math.nan
 
         # Cota de sangria (preferir no dia atual; senão último histórico não-nulo)
         cota_atual = last_scalar_on_date(dfr, col_data, data_atual, col_cota_sangria)
@@ -194,26 +168,96 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
             cota_sangria_val = cota_atual
         else:
             cota_hist = pd.to_numeric(dfr[col_cota_sangria], errors="coerce").dropna()
-            cota_sangria_val = float(cota_hist.iloc[-1]) if len(cota_hist) > 0 else math.nan
+            cota_sangria_val = float(cota_hist.iloc[-1]) if not cota_hist.empty else math.nan
 
         variacao = (nivel_atual - nivel_anterior) if (pd.notna(nivel_atual) and pd.notna(nivel_anterior)) else math.nan
 
         rows.append({
             "Reservatório": res,
             "Cota Sangria": cota_sangria_val,
-            col_anterior_label: nivel_anterior,
-            col_atual_label: nivel_atual,
+            col_anterior_label: nivel_anterior,  # Nível (m) na data anterior
+            col_atual_label:    nivel_atual,     # Nível (m) na data atual
             "Capacidade Total (m³)": cap_total,
             "Variação do Nível": variacao,
         })
 
     out = pd.DataFrame(rows)
-    if len(out) > 0:
+    if not out.empty:
         order = ["Reservatório", "Cota Sangria", col_anterior_label, col_atual_label, "Capacidade Total (m³)", "Variação do Nível"]
-        # Mantém apenas colunas que existem no DataFrame
-        order = [col for col in order if col in out.columns]
         out = out.reindex(columns=order).sort_values("Reservatório").reset_index(drop=True)
-    return out
+
+    return out, data_anterior, data_atual
+
+# ==========================
+# Renderização com “célula mesclada” (HTML)
+# ==========================
+def format_ptbr(num, casas=2, inteiro=False):
+    if pd.isna(num):
+        return ""
+    if inteiro:
+        s = f"{num:,.0f}"
+    else:
+        s = f"{num:,.{casas}f}"
+    # formatação pt-BR
+    return s.replace(",", "temp").replace(".", ",").replace("temp", ".")
+
+def render_table_with_group_header(df: pd.DataFrame, prev_label: str, curr_label: str, group_label="Cota (m)"):
+    """Renderiza uma tabela HTML com cabeçalho mesclado sobre as duas colunas de data."""
+    # nomes das colunas
+    cols = list(df.columns)
+    # índices das colunas de data
+    i_prev = cols.index(prev_label)
+    i_curr = cols.index(curr_label)
+
+    # CSS simples para deixar bonito
+    css = """
+    <style>
+    table.cota-table {width: 100%; border-collapse: collapse; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;}
+    table.cota-table th, table.cota-table td {border: 1px solid #e5e7eb; padding: 8px 10px; text-align: right;}
+    table.cota-table th {background: #f8fafc; font-weight: 600; color: #111827;}
+    table.cota-table td:first-child, table.cota-table th:first-child {text-align: left;}
+    table.cota-table td:nth-child(2), table.cota-table th:nth-child(2) {text-align: right;}
+    .group-head {text-align: center; background: #eef2ff;}
+    </style>
+    """
+
+    # Cabeçalho em duas linhas: mescla para “Cota (m)”
+    # Colunas fixas à esquerda e direita têm rowspan=2
+    left_fixed = ["Reservatório", "Cota Sangria"]
+    right_fixed = ["Capacidade Total (m³)", "Variação do Nível"]
+
+    html = [css, '<table class="cota-table">', "<thead>"]
+
+    # Linha 1 do cabeçalho
+    html.append("<tr>")
+    html.append(f'<th rowspan="2">{left_fixed[0]}</th>')
+    html.append(f'<th rowspan="2">{left_fixed[1]}</th>')
+    html.append(f'<th class="group-head" colspan="2">{group_label}</th>')
+    html.append(f'<th rowspan="2">{right_fixed[0]}</th>')
+    html.append(f'<th rowspan="2">{right_fixed[1]}</th>')
+    html.append("</tr>")
+
+    # Linha 2 do cabeçalho (datas)
+    html.append("<tr>")
+    html.append(f"<th>{prev_label}</th>")
+    html.append(f"<th>{curr_label}</th>")
+    html.append("</tr>")
+    html.append("</thead>")
+
+    # Corpo
+    html.append("<tbody>")
+    for _, row in df.iterrows():
+        html.append("<tr>")
+        html.append(f"<td>{row[left_fixed[0]]}</td>")
+        html.append(f"<td>{format_ptbr(row[left_fixed[1]], casas=2)}</td>")
+        html.append(f"<td>{format_ptbr(row[prev_label], casas=2)}</td>")
+        html.append(f"<td>{format_ptbr(row[curr_label], casas=2)}</td>")
+        html.append(f"<td>{format_ptbr(row[right_fixed[0]], inteiro=True)}</td>")
+        html.append(f"<td>{format_ptbr(row[right_fixed[1]], casas=2)}</td>")
+        html.append("</tr>")
+    html.append("</tbody></table>")
+
+    st.markdown("\n".join(html), unsafe_allow_html=True)
 
 # ==========================
 # UI
@@ -222,12 +266,8 @@ st.title("📊 Tabela diária de Reservatórios")
 
 with st.sidebar:
     st.markdown("### Fonte dos dados")
-    default_mode = st.radio(
-        "Escolha a fonte",
-        ("Google Sheets (link padrão)", "Enviar CSV (arquivo local)"),
-        index=0,
-    )
-    if default_mode == "Google Sheets (link padrão)":
+    mode = st.radio("Escolha a fonte", ("Google Sheets (link padrão)", "Enviar CSV (arquivo local)"), index=0)
+    if mode == "Google Sheets (link padrão)":
         url = st.text_input("URL do Google Sheets", value=SHEETS_URL)
         uploaded_file = None
     else:
@@ -242,60 +282,65 @@ try:
         df_raw = load_data_from_url(url)
         st.success("Dados carregados do Google Sheets")
 
-    # Mostra prévia dos dados
     with st.expander("Visualizar dados brutos"):
         st.dataframe(df_raw.head(), use_container_width=True)
 
+    # Descobrir todas as datas disponíveis (normalizadas) para o seletor
+    col_data_guess = find_column(df_raw, {"data", "dt", "dia"})
+    date_options = []
+    if col_data_guess:
+        dnorm = pd.to_datetime(df_raw[col_data_guess], errors="coerce").dropna().dt.normalize()
+        if not dnorm.empty:
+            udates = sorted(dnorm.unique())
+            data_atual_default = udates[-1]
+            prev_cands = [d for d in udates if d < data_atual_default]
+            # opções para o seletor (apenas anteriores à atual)
+            opts = prev_cands[::-1]  # mais recentes primeiro
+            date_options = [pd.Timestamp(d) for d in opts]
+
+    forced_prev = None
+    if date_options:
+        forced_prev_str = st.sidebar.selectbox(
+            "Selecionar data anterior",
+            [d.strftime("%d/%m/%Y") for d in date_options],
+            index=0,
+            help="Escolha outra data para comparar com o dia atual."
+        )
+        forced_prev = pd.to_datetime(forced_prev_str, dayfirst=True)
+
     # Filtro opcional por reservatório
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
-    if col_res_guess is not None:
-        reservatorios = sorted([x for x in df_raw[col_res_guess].dropna().unique() if x])
+    if col_res_guess:
+        reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
         sel = st.multiselect("Filtrar reservatórios (opcional)", reservatorios, [])
-        df_filtered = df_raw[df_raw[col_res_guess].isin(sel)] if len(sel) > 0 else df_raw
+        df_filtered = df_raw[df_raw[col_res_guess].isin(sel)] if sel else df_raw
     else:
         df_filtered = df_raw
-        st.warning("Não foi possível identificar a coluna de reservatórios")
+        st.warning("Não foi possível identificar a coluna de Reservatório.")
 
-    # Calcula tabela final
+    # Processar
     with st.spinner("Processando dados..."):
-        result = compute_table_global_dates(df_filtered)
+        result, dprev, dcurr = compute_table_global_dates(df_filtered, forced_prev_date=forced_prev)
 
     st.subheader("Resultado")
-    if result is None or len(result) == 0:
-        st.info("Nenhum dado com as duas datas mais recentes foi encontrado.")
+    if result.empty:
+        st.info("Nenhum dado encontrado para as datas selecionadas.")
     else:
-        # Formatação amigável pt-BR
-        result_fmt = result.copy()
-        for col in result_fmt.columns:
-            if col == "Reservatório":
-                continue
-            if col == "Capacidade Total (m³)":
-                result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.0f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
-                    if pd.notna(v) else ""
-                )
-            elif col in ("Cota Sangria", "Variação do Nível"):
-                result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.2f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
-                    if pd.notna(v) else ""
-                )
-            else:
-                # Colunas de data (valores de Nível)
-                result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.2f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
-                    if pd.notna(v) else ""
-                )
+        prev_label = dprev.strftime("%d/%m/%Y") if pd.notna(dprev) else "Data Anterior"
+        curr_label = dcurr.strftime("%d/%m/%Y") if pd.notna(dcurr) else "Data Atual"
 
-        st.dataframe(result_fmt, use_container_width=True, hide_index=True)
+        # Render com “célula mesclada” Cota (m)
+        render_table_with_group_header(result, prev_label, curr_label, group_label="Cota (m)")
 
-        # Download CSV bruto
+        # Download CSV (dados crus)
         csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
-        st.download_button("⬇️ Baixar CSV", data=csv_bytes, 
-                         file_name="reservatorios_tabela_diaria.csv", 
-                         mime="text/csv")
+        st.download_button("⬇️ Baixar CSV", data=csv_bytes,
+                           file_name="reservatorios_tabela_diaria.csv",
+                           mime="text/csv")
 
         st.caption(
-            "As colunas com datas no cabeçalho exibem o **Nível** nas **duas datas mais recentes**. "
+            "O cabeçalho **Cota (m)** agrupa os níveis medidos nas duas datas. "
+            "Você pode ajustar a **data anterior** na barra lateral. "
             "• **Capacidade Total (m³)** = Volume (dia atual) ÷ (Percentual (dia atual) ÷ 100). "
             "• **Variação do Nível** = Nível (data atual) − Nível (data anterior)."
         )
