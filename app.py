@@ -142,10 +142,10 @@ def compute_table_global_dates(
 
     rows = []
     for res, dfr in df.groupby(col_reservatorio, dropna=True):
-        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,    col_nivel)
+        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,     col_nivel)
         nivel_anterior = last_scalar_on_date(dfr, col_data, data_anterior, col_nivel) if pd.notna(data_anterior) else math.nan
 
-        vol_atual      = last_scalar_on_date(dfr, col_data, data_atual,    col_volume)
+        vol_atual      = last_scalar_on_date(dfr, col_data, data_atual,     col_volume)
         vol_anterior   = last_scalar_on_date(dfr, col_data, data_anterior, col_volume) if pd.notna(data_anterior) else math.nan
         perc_atual     = last_scalar_on_date(dfr, col_data, data_atual, col_percentual)
 
@@ -167,9 +167,9 @@ def compute_table_global_dates(
             "Capacidade Total (m³)": cap_total,
             "Cota Sangria": cota_sangria_val,
             col_anterior_label: nivel_anterior,
-            col_atual_label:     nivel_atual,
+            col_atual_label:      nivel_atual,
             "Variação do Nível": variacao_nivel,
-            "Variação do Volume": variacao_volume,  # m³ (3 casas na exibição)
+            "Variação do Volume": variacao_volume,
             "Volume": vol_atual,
             "Percentual": perc_atual,
             "Verter": verter_val,
@@ -226,7 +226,7 @@ def render_table_with_group_headers(
     curr_label: str,
     volume_group_label: str,
     cota_group_label: str = "Cota (m)",
-    prev_date_value: pd.Timestamp = None  # Adicionado parâmetro para a data anterior
+    prev_date_value: pd.Timestamp = None
 ):
     css = """
     <style>
@@ -258,7 +258,7 @@ def render_table_with_group_headers(
     html.append("<tr>")
     
     # Cabeçalho da data anterior clicável
-    prev_date_str = prev_date_value.strftime('%Y-%m-%d') if prev_date_value else ''
+    prev_date_str = prev_date_value.strftime('%Y-%m-%d') if pd.notna(prev_date_value) else ''
     html.append(f'<th class="date-header" onclick="alterarDataAnterior(\'{prev_date_str}\')">{prev_label} 📅</th>')
     
     html.append(f"<th>{curr_label}</th>")
@@ -321,39 +321,49 @@ try:
         
         # Usar session_state para gerenciar a seleção
         if 'selected_reservoirs' not in st.session_state:
-            st.session_state.selected_reservoirs = ["Todos"]
+            st.session_state.selected_reservoirs = reservatorios  # Início com todos selecionados
         
-        # Container para organizar os controles
+        # Lógica de seleção do multiselect
+        options = ["Todos"] + reservatorios
+        
+        # Determinar o valor padrão
+        if not st.session_state.selected_reservoirs or len(st.session_state.selected_reservoirs) == len(reservatorios):
+            default_selection = ["Todos"]
+            filtered_reservoirs = reservatorios
+        else:
+            default_selection = st.session_state.selected_reservoirs
+            filtered_reservoirs = st.session_state.selected_reservoirs
+            
         col1, col2 = st.columns([3, 1])
-        
         with col1:
-            # Multiselect para seleção - MOSTRAR TODOS OS NOMES QUANDO "Todos" ESTIVER SELECIONADO
-            if "Todos" in st.session_state.selected_reservoirs:
-                # Mostrar todos os nomes selecionados quando "Todos" está ativo
-                sel = st.multiselect(
-                    "Filtrar reservatórios (opcional)", 
-                    reservatorios, 
-                    default=reservatorios,  # TODOS SELECIONADOS
-                    placeholder="Selecione…",
-                    help="Todos os reservatórios selecionados. Desselecione individualmente para remover."
-                )
-            else:
-                # Mostrar seleção normal quando não está em "Todos"
-                sel = st.multiselect(
-                    "Filtrar reservatórios (opcional)", 
-                    ["Todos"] + reservatorios, 
-                    default=st.session_state.selected_reservoirs,
-                    placeholder="Selecione…",
-                    help="Selecione 'Todos' para mostrar todos os reservatórios, ou selecione/desselecione individualmente"
-                )
-        
+            sel = st.multiselect(
+                "Filtrar reservatórios (opcional)",
+                options,
+                default=default_selection,
+                placeholder="Selecione…",
+            )
+
+            # Lógica para gerenciar "Todos"
+            if "Todos" in sel and len(sel) > 1:
+                # Se "Todos" foi selecionado com outros, só mantenha "Todos"
+                sel = ["Todos"]
+            elif "Todos" in sel and len(st.session_state.selected_reservoirs) < len(reservatorios):
+                # Se "Todos" foi selecionado, e não estava antes, selecione todos
+                st.session_state.selected_reservoirs = reservatorios
+                st.rerun()
+            elif "Todos" not in sel and len(st.session_state.selected_reservoirs) == len(reservatorios):
+                 # Se "Todos" foi desmarcado, limpa a lista de seleção
+                 st.session_state.selected_reservoirs = [x for x in sel if x != "Todos"]
+                 st.rerun()
+            elif sel != st.session_state.selected_reservoirs:
+                st.session_state.selected_reservoirs = [x for x in sel if x != "Todos"]
+                st.rerun()
+
         with col2:
-            # Botões de ação rápida
             st.write("Ações rápidas:")
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
                 if st.button("Todos", use_container_width=True):
-                    # Seleciona TODOS os nomes (como na imagem)
                     st.session_state.selected_reservoirs = reservatorios
                     st.rerun()
             with col_btn2:
@@ -361,31 +371,17 @@ try:
                     st.session_state.selected_reservoirs = []
                     st.rerun()
         
-        # Atualizar session_state se a seleção mudou
-        if sel != st.session_state.selected_reservoirs:
-            st.session_state.selected_reservoirs = sel
-            st.rerun()
-        
-        # Lógica de filtragem
-        if not st.session_state.selected_reservoirs:
-            df_filtered = df_raw.head(0)
-            st.info("Nenhum reservatório selecionado. Selecione 'Todos' ou reservatórios específicos para visualizar os dados.")
-            st.stop()
-        elif len(st.session_state.selected_reservoirs) == len(reservatorios):
-            # Se TODOS os reservatórios estão selecionados, mostrar tudo
-            df_filtered = df_raw
-            st.info("Mostrando todos os reservatórios")
-        else:
-            # Se há seleções específicas
-            df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservoirs)]
-            st.info(f"Mostrando {len(st.session_state.selected_reservoirs)} reservatório(s) selecionado(s)")
-            
-        # Mostrar status da seleção
+        # Filtro final
         if st.session_state.selected_reservoirs:
+            df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservoirs)]
             if len(st.session_state.selected_reservoirs) == len(reservatorios):
-                st.caption("Selecionados: Todos os reservatórios")
+                st.info("Mostrando todos os reservatórios.")
             else:
-                st.caption(f"Selecionados: {', '.join(st.session_state.selected_reservoirs)}")
+                st.info(f"Mostrando {len(st.session_state.selected_reservoirs)} reservatório(s) selecionado(s).")
+        else:
+            df_filtered = df_raw.head(0)
+            st.warning("Nenhum reservatório selecionado. Selecione 'Todos' ou reservatórios específicos para visualizar os dados.")
+            st.stop()
             
     else:
         df_filtered = df_raw
@@ -421,13 +417,12 @@ try:
         curr_label=curr_label,
         volume_group_label=volume_group_label,
         cota_group_label="Cota (m)",
-        prev_date_value=dprev  # Passar a data anterior para o cabeçalho
+        prev_date_value=dprev
     )
     st.markdown(html_table_string, unsafe_allow_html=True)
 
     # POPOVER PARA SELECIONAR DATA - agora aparece quando clica na coluna
     if st.query_params.get("prev"):
-        # Se há um parâmetro 'prev' na URL, mostrar o popover de seleção de data
         with st.popover("📅 Selecionar data anterior", open=True):
             st.markdown("**Escolha a data anterior**")
             
@@ -454,7 +449,6 @@ try:
                     st.rerun()
             with col2:
                 if st.button("Cancelar"):
-                    # Limpar o parâmetro prev
                     if "prev" in st.query_params:
                         del st.query_params["prev"]
                     st.rerun()
@@ -463,12 +457,10 @@ try:
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        # CSV (formatado)
         csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
         st.download_button("⬇️ Baixar CSV (formatado)", data=csv_bytes,
-                           file_name="reservatorios_tabela_diaria.csv", mime="text/csv", use_container_width=True)
+                            file_name="reservatorios_tabela_diaria.csv", mime="text/csv", use_container_width=True)
     with col2:
-        # HTML da Tabela
         st.download_button(
             label="🌐 Baixar HTML — Tabela",
             data=html_table_string.encode("utf-8"),
@@ -496,8 +488,8 @@ try:
                     y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Variação do Nível", op="min", order='ascending'), title=None),
                     x=alt.X("Variação do Nível:Q", title="Δ nível (m)"),
                     color=alt.condition("datum['Variação do Nível'] > 0",
-                                        alt.value("#2563eb"),  # azul
-                                        alt.value("#dc2626")), # vermelho
+                                        alt.value("#2563eb"),
+                                        alt.value("#dc2626")),
                     tooltip=[
                         alt.Tooltip("Reservatório:N"),
                         alt.Tooltip("Variação do Nível:Q", format=".2f"),
@@ -575,8 +567,8 @@ try:
                     y=alt.Y("Reservatório:N", sort=alt.EncodingSortField(field="Verter", op="min", order='descending'), title=None),
                     x=alt.X("Verter:Q", title="Verter (m)"),
                     color=alt.condition("datum['Verter'] <= 0",
-                                        alt.value("#34d399"), # Verde (verter)
-                                        alt.value("#facc15")), # Amarelo (não verter)
+                                        alt.value("#34d399"),
+                                        alt.value("#facc15")),
                     tooltip=[
                         alt.Tooltip("Reservatório:N"),
                         alt.Tooltip("Verter:Q", format=".2f"),
