@@ -1,8 +1,10 @@
+# app.py
 import re
 import math
 import unicodedata
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
 
@@ -53,12 +55,13 @@ def to_datetime_any(x):
     """Converte datas em vários formatos, retornando Timestamp ou NaT."""
     if pd.isna(x):
         return pd.NaT
-    for dayfirst in (True, False):
-        try:
-            return pd.to_datetime(x, dayfirst=dayfirst, errors="raise")
-        except Exception:
-            continue
-    return pd.NaT
+    try:
+        # Tenta converter removendo timezone se presente
+        if isinstance(x, str) and 'T' in x:
+            x = x.split('T')[0]
+        return pd.to_datetime(x, dayfirst=True, errors="coerce")
+    except Exception:
+        return pd.NaT
 
 @st.cache_data(ttl=900)
 def load_data_from_url(url: str) -> pd.DataFrame:
@@ -82,7 +85,7 @@ def find_column(df: pd.DataFrame, aliases):
     return None
 
 # ==========================
-# Cálculo principal
+# Cálculo principal - CORREÇÃO PRINCIPAL
 # ==========================
 def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     def last_scalar_on_date(dfr: pd.DataFrame, date_col: str, target_date, value_col: str) -> float:
@@ -92,13 +95,31 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
         """
         if pd.isna(target_date):
             return math.nan
-        sel = dfr.loc[dfr[date_col] == target_date, value_col]
-        if sel is None or len(sel) == 0:
+        
+        # Converte ambas as datas para o mesmo formato (apenas data, sem hora)
+        try:
+            # Garante que target_date seja apenas data
+            target_date_only = pd.Timestamp(target_date).normalize()
+            
+            # Converte a coluna de datas para o mesmo formato
+            dfr_dates = pd.to_datetime(dfr[date_col]).dt.normalize()
+            
+            # Encontra registros com a mesma data
+            mask = dfr_dates == target_date_only
+            sel = dfr.loc[mask, value_col]
+            
+            if sel.empty:
+                return math.nan
+                
+            # Converte para numérico e pega o último valor válido
+            sel_numeric = pd.to_numeric(sel, errors='coerce').dropna()
+            if sel_numeric.empty:
+                return math.nan
+                
+            return float(sel_numeric.iloc[-1])
+            
+        except Exception:
             return math.nan
-        sel = pd.to_numeric(sel, errors="coerce").dropna()
-        if len(sel) == 0:
-            return math.nan
-        return float(sel.iloc[-1])
 
     df = df_raw.copy()
 
@@ -137,11 +158,15 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     if len(df) == 0:
         return pd.DataFrame()
 
-    # Datas globais mais recentes
+    # Datas globais mais recentes (apenas a parte da data, sem hora)
     unique_dates = pd.Series(df[col_data].dropna().unique())
-    unique_dates = pd.to_datetime(unique_dates, errors="coerce").dropna().sort_values().tolist()
+    unique_dates = pd.to_datetime(unique_dates, errors="coerce").dropna()
+    unique_dates = unique_dates.dt.normalize().unique()  # Remove duplicatas e normaliza
+    unique_dates = sorted(unique_dates)
+    
     if len(unique_dates) == 0:
         return pd.DataFrame()
+        
     data_atual    = unique_dates[-1]
     data_anterior = unique_dates[-2] if len(unique_dates) >= 2 else pd.NaT
 
@@ -152,7 +177,7 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for res, dfr in df.groupby(col_reservatorio, dropna=True):
         # NÍVEIS nas datas globais
-        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,    col_nivel)
+        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual, col_nivel)
         nivel_anterior = last_scalar_on_date(dfr, col_data, data_anterior, col_nivel) if pd.notna(data_anterior) else math.nan
 
         # Volume/Percentual do dia ATUAL para capacidade total
@@ -176,8 +201,8 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
         rows.append({
             "Reservatório": res,
             "Cota Sangria": cota_sangria_val,
-            col_anterior_label: nivel_anterior,  # Nível na data anterior
-            col_atual_label:    nivel_atual,     # Nível na data atual
+            col_anterior_label: nivel_anterior,
+            col_atual_label: nivel_atual,
             "Capacidade Total (m³)": cap_total,
             "Variação do Nível": variacao,
         })
@@ -185,6 +210,8 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     if len(out) > 0:
         order = ["Reservatório", "Cota Sangria", col_anterior_label, col_atual_label, "Capacidade Total (m³)", "Variação do Nível"]
+        # Mantém apenas colunas que existem no DataFrame
+        order = [col for col in order if col in out.columns]
         out = out.reindex(columns=order).sort_values("Reservatório").reset_index(drop=True)
     return out
 
@@ -210,20 +237,28 @@ with st.sidebar:
 try:
     if uploaded_file is not None:
         df_raw = pd.read_csv(uploaded_file, dtype=str)
+        st.success(f"CSV carregado: {uploaded_file.name}")
     else:
         df_raw = load_data_from_url(url)
+        st.success("Dados carregados do Google Sheets")
+
+    # Mostra prévia dos dados
+    with st.expander("Visualizar dados brutos"):
+        st.dataframe(df_raw.head(), use_container_width=True)
 
     # Filtro opcional por reservatório
     col_res_guess = find_column(df_raw, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     if col_res_guess is not None:
-        reservatorios = sorted([x for x in df_raw[col_res_guess].dropna().unique()])
+        reservatorios = sorted([x for x in df_raw[col_res_guess].dropna().unique() if x])
         sel = st.multiselect("Filtrar reservatórios (opcional)", reservatorios, [])
         df_filtered = df_raw[df_raw[col_res_guess].isin(sel)] if len(sel) > 0 else df_raw
     else:
         df_filtered = df_raw
+        st.warning("Não foi possível identificar a coluna de reservatórios")
 
     # Calcula tabela final
-    result = compute_table_global_dates(df_filtered)
+    with st.spinner("Processando dados..."):
+        result = compute_table_global_dates(df_filtered)
 
     st.subheader("Resultado")
     if result is None or len(result) == 0:
@@ -236,23 +271,28 @@ try:
                 continue
             if col == "Capacidade Total (m³)":
                 result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                    lambda v: f"{v:,.0f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
+                    if pd.notna(v) else ""
                 )
             elif col in ("Cota Sangria", "Variação do Nível"):
                 result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                    lambda v: f"{v:,.2f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
+                    if pd.notna(v) else ""
                 )
             else:
                 # Colunas de data (valores de Nível)
                 result_fmt[col] = result_fmt[col].apply(
-                    lambda v: f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(v) else ""
+                    lambda v: f"{v:,.2f}".replace(",", "temp").replace(".", ",").replace("temp", ".") 
+                    if pd.notna(v) else ""
                 )
 
         st.dataframe(result_fmt, use_container_width=True, hide_index=True)
 
         # Download CSV bruto
-        csv_bytes = result.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Baixar CSV", data=csv_bytes, file_name="reservatorios_tabela_diaria.csv", mime="text/csv")
+        csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
+        st.download_button("⬇️ Baixar CSV", data=csv_bytes, 
+                         file_name="reservatorios_tabela_diaria.csv", 
+                         mime="text/csv")
 
         st.caption(
             "As colunas com datas no cabeçalho exibem o **Nível** nas **duas datas mais recentes**. "
@@ -261,5 +301,7 @@ try:
         )
 
 except Exception as e:
-    st.error(f"Ocorreu um erro ao processar os dados: {e}")
-    st.stop()
+    st.error(f"Ocorreu um erro ao processar os dados: {str(e)}")
+    import traceback
+    with st.expander("Detalhes do erro"):
+        st.code(traceback.format_exc())
