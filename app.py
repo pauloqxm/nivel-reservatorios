@@ -292,8 +292,9 @@ try:
     if col_res_guess:
         reservatorios = sorted(x for x in df_raw[col_res_guess].dropna().unique() if x)
         
-        # Criar opções com "Todos" primeiro
-        all_options = ["Todos"] + reservatorios
+        # Usar session_state para gerenciar a seleção
+        if 'selected_reservoirs' not in st.session_state:
+            st.session_state.selected_reservoirs = ["Todos"]
         
         # Container para organizar os controles
         col1, col2 = st.columns([3, 1])
@@ -302,8 +303,8 @@ try:
             # Multiselect para seleção
             sel = st.multiselect(
                 "Filtrar reservatórios (opcional)", 
-                all_options, 
-                default=["Todos"], 
+                ["Todos"] + reservatorios, 
+                default=st.session_state.selected_reservoirs,
                 placeholder="Selecione…",
                 help="Selecione 'Todos' para mostrar todos os reservatórios, ou selecione/desselecione individualmente"
             )
@@ -314,40 +315,32 @@ try:
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
                 if st.button("Todos", use_container_width=True):
-                    # Seleciona TODOS os reservatórios (não apenas o texto "Todos")
-                    sel = reservatorios
-                    st.session_state.selected_reservoirs = sel
+                    # Seleciona apenas "Todos"
+                    st.session_state.selected_reservoirs = ["Todos"]
                     st.rerun()
             with col_btn2:
                 if st.button("Limpar", use_container_width=True):
-                    sel = []
-                    st.session_state.selected_reservoirs = sel
+                    st.session_state.selected_reservoirs = []
                     st.rerun()
         
-        # Usar session_state para manter a seleção entre reruns
-        if 'selected_reservoirs' not in st.session_state:
+        # Atualizar session_state se a seleção mudou
+        if sel != st.session_state.selected_reservoirs:
             st.session_state.selected_reservoirs = sel
-        
-        # Atualizar a seleção se foi modificada pelos botões
-        if st.session_state.selected_reservoirs != sel:
-            st.session_state.selected_reservoirs = sel
+            st.rerun()
         
         # Lógica de filtragem
         if not st.session_state.selected_reservoirs:
-            # Se nada foi selecionado
             df_filtered = df_raw.head(0)
-            st.info("Nenhum reservatório selecionado. Selecione reservatórios para visualizar os dados.")
+            st.info("Nenhum reservatório selecionado. Selecione 'Todos' ou reservatórios específicos para visualizar os dados.")
             st.stop()
+        elif "Todos" in st.session_state.selected_reservoirs:
+            # Se "Todos" está selecionado, mostrar tudo
+            df_filtered = df_raw
+            st.info("Mostrando todos os reservatórios")
         else:
-            # Se há seleções (pode ser "Todos" ou reservatórios específicos)
-            if "Todos" in st.session_state.selected_reservoirs:
-                # Se "Todos" está selecionado, mostrar tudo
-                df_filtered = df_raw
-                st.info("Mostrando todos os reservatórios")
-            else:
-                # Se há seleções específicas (sem "Todos")
-                df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservoirs)]
-                st.info(f"Mostrando {len(st.session_state.selected_reservoirs)} reservatório(s) selecionado(s)")
+            # Se há seleções específicas (sem "Todos")
+            df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservoirs)]
+            st.info(f"Mostrando {len(st.session_state.selected_reservoirs)} reservatório(s) selecionado(s)")
             
         # Mostrar status da seleção
         if st.session_state.selected_reservoirs:
