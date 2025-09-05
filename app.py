@@ -34,27 +34,35 @@ def google_sheets_to_csv_url(url: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{doc_id}/export?format=csv&gid={gid}"
 
 def strip_accents_lower(s: str) -> str:
+    """Remove acentos de uma string e a converte para minúsculas."""
     s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
     return s.lower()
 
 def to_number(x):
     """
-    Converte strings como '1.234,56' -> 1234.56, preservando floats/ints/NaN.
+    Converte strings para números, lidando com diferentes formatos (ex: '1.234,56').
+    A lógica agora é mais robusta para distinguir separadores de milhar e decimal.
     """
-    if x is None or (isinstance(x, float) and math.isnan(x)):
-        return math.nan
-    if isinstance(x, (int, float)):
+    if x is None or (isinstance(x, float) and math.isnan(x)) or isinstance(x, (int, float)):
         return float(x)
-    s = str(x).strip()
+    s = str(x).strip().replace(" ", "")
     if s == "" or s.lower() in {"nan", "none"}:
         return math.nan
-    # mantém apenas dígitos, ponto, vírgula e sinal
-    s = ''.join(ch for ch in s if ch.isdigit() or ch in ".,-")
-    # Heurística: vírgula como decimal se coexistir com ponto
-    if "," in s and "." in s:
+    
+    # Heurística para separadores: o último é o decimal
+    last_comma_pos = s.rfind(',')
+    last_dot_pos = s.rfind('.')
+    
+    # Se ambos os separadores existem e a vírgula é a última
+    if last_comma_pos > last_dot_pos:
         s = s.replace(".", "").replace(",", ".")
-    else:
+    # Se ambos os separadores existem e o ponto é o último
+    elif last_dot_pos > last_comma_pos:
+        s = s.replace(",", "")
+    # Se só há vírgula, assume que é decimal
+    elif last_comma_pos != -1:
         s = s.replace(",", ".")
+    
     try:
         return float(s)
     except ValueError:
@@ -126,10 +134,10 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     # Mapear colunas por nomes comuns/aliases
     col_reservatorio = find_column(df, {"reservatorio", "reservatório", "acude", "açude", "nome"})
     col_cota_sangria = find_column(df, {"cota sangria", "cota de sangria", "cota_sangria", "cota excedencia"})
-    col_data        = find_column(df, {"data", "dt", "dia"})
-    col_volume      = find_column(df, {"volume", "vol"})
+    col_data           = find_column(df, {"data", "dt", "dia"})
+    col_volume       = find_column(df, {"volume", "vol"})
     col_percentual  = find_column(df, {"percentual", "perc", "percentual (%)", "volume (%)"})
-    col_nivel       = find_column(df, {"nivel", "nível", "cota", "altura"})
+    col_nivel        = find_column(df, {"nivel", "nível", "cota", "altura"})
 
     required = {
         "Reservatório": col_reservatorio,
@@ -148,18 +156,18 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
         )
 
     # Conversões
-    df[col_data]         = df[col_data].apply(to_datetime_any)
-    df[col_volume]       = df[col_volume].apply(to_number)
-    df[col_percentual]   = df[col_percentual].apply(to_number)
-    df[col_nivel]        = df[col_nivel].apply(to_number)
-    df[col_cota_sangria] = df[col_cota_sangria].apply(to_number)
+    df[col_data]           = df[col_data].apply(to_datetime_any)
+    df[col_volume]         = df[col_volume].apply(to_number)
+    df[col_percentual]     = df[col_percentual].apply(to_number)
+    df[col_nivel]          = df[col_nivel].apply(to_number)
+    df[col_cota_sangria]   = df[col_cota_sangria].apply(to_number)
     df = df.dropna(subset=[col_data])
 
     # Duas datas globais mais recentes
     unique_dates = pd.Series(df[col_data].dropna().unique()).sort_values().tolist()
     if len(unique_dates) == 0:
         return pd.DataFrame()
-    data_atual    = pd.to_datetime(unique_dates[-1])
+    data_atual     = pd.to_datetime(unique_dates[-1])
     data_anterior = pd.to_datetime(unique_dates[-2]) if len(unique_dates) >= 2 else pd.NaT
 
     # Rótulos de coluna (dd/mm/aaaa)
@@ -169,7 +177,7 @@ def compute_table_global_dates(df_raw: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for res, dfr in df.groupby(col_reservatorio, dropna=True):
         # NÍVEL nas duas datas (preenche valores das colunas rotuladas pelas datas)
-        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,    col_nivel)
+        nivel_atual    = last_scalar_on_date(dfr, col_data, data_atual,     col_nivel)
         nivel_anterior = last_scalar_on_date(dfr, col_data, data_anterior, col_nivel) if pd.notna(data_anterior) else math.nan
 
         # Volume e Percentual do DIA ATUAL (para capacidade total)
