@@ -3,3 +3,4 @@ pandas
 altair
 vl-convert-python
 matplotlib
+weasyprint
