@@ -4,4 +4,3 @@ altair
 vl-convert-python
 matplotlib
 weasyprint
-HTML 
