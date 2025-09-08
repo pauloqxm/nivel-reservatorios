@@ -5,7 +5,6 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 from io import BytesIO
-from weasyprint import HTML  # Adicionado para PDF
 
 st.set_page_config(page_title="Reservatórios – Tabela diária", layout="wide")
 
@@ -15,24 +14,7 @@ alt.data_transformers.disable_max_rows()
 # ==========================
 # Configuração
 # ==========================
-SHEETS_URL = "https://docs.google.com/spreadsheets/d/1zZ0RCyYj-AzA_dhWjXgforbaH7WIoSEd2EKdk/edit?gid=1305065127#gid=1305065127"
-
-# ==========================
-# Função para converter HTML para PDF
-# ==========================
-def convert_html_to_pdf(html_content):
-    """Converte conteúdo HTML para PDF usando WeasyPrint"""
-    try:
-        # Cria objeto HTML
-        html = HTML(string=html_content)
-        
-        # Gera PDF
-        pdf_bytes = html.write_pdf()
-        return pdf_bytes
-        
-    except Exception as e:
-        st.error(f"Erro ao converter para PDF: {e}")
-        return b""
+SHEETS_URL = "https://docs.google.com/spreadsheets/d/1zZ0RCyYj-AzA_dhWzxRziDWjgforbaH7WIoSEd2EKdk/edit?gid=1305065127#gid=1305065127"
 
 # ==========================
 # Utilitários
@@ -368,7 +350,7 @@ try:
             st.info("Mostrando todos os reservatórios")
         else:
             # Se há seleções específicas
-            df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservators)]
+            df_filtered = df_raw[df_raw[col_res_guess].isin(st.session_state.selected_reservoirs)]
             st.info(f"Mostrando {len(st.session_state.selected_reservoirs)} reservatório(s) selecionado(s)")
             
         # Mostrar status da seleção
@@ -422,7 +404,7 @@ try:
                 st.query_params.update({"prev": pd.Timestamp(date_sel).strftime("%Y-%m-%d")})
                 st.rerun()
 
-# Tabela (HTML mesclado na página)
+    # Tabela (HTML mesclado na página)
     if result.empty:
         st.info("Nenhum dado encontrado para as datas selecionadas.")
         st.stop()
@@ -440,15 +422,14 @@ try:
     )
     st.markdown(html_table_string, unsafe_allow_html=True)
 
-# ===== Botões de exportação =====
-    col1, col2, col3 = st.columns([1, 1, 1])  # Alterado para 3 colunas
+    # ===== Botões de exportação =====
+    col1, col2 = st.columns([1, 1])
 
     with col1:
         # CSV (formatado)
         csv_bytes = result.to_csv(index=False, sep=';', decimal=',').encode("utf-8")
         st.download_button("⬇️ Baixar CSV (formatado)", data=csv_bytes,
                            file_name="reservatorios_tabela_diaria.csv", mime="text/csv", use_container_width=True)
-    
     with col2:
         # HTML da Tabela
         st.download_button(
@@ -456,16 +437,6 @@ try:
             data=html_table_string.encode("utf-8"),
             file_name="tabela_reservatorios.html",
             mime="text/html",
-            use_container_width=True
-        )
-    
-    with col3:
-        # PDF da Tabela - NOVO BOTÃO
-        st.download_button(
-            label="📄 Baixar PDF — Tabela",
-            data=convert_html_to_pdf(html_table_string),
-            file_name="tabela_reservatorios.pdf",
-            mime="application/pdf",
             use_container_width=True
         )
 
