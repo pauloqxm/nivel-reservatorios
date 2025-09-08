@@ -3,8 +3,3 @@ pandas
 altair
 vl-convert-python
 matplotlib
-weasyprint
-cairocffi
-pango
-tinycss2
-cssselect2
